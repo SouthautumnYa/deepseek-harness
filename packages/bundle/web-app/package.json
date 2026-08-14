@@ -102,6 +102,7 @@
     "@deepseek-ai/dsh-storage-json": "workspace:^",
     "@deepseek-ai/dsh-workspace": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^",
+    "dsh-plugin-marketplace": "git+https://github.com/bradeGithub/DSH-Plugins-Marketplace.git#6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a",
     "commander": "^15.0.0"
   },
   "peerDependencies": {

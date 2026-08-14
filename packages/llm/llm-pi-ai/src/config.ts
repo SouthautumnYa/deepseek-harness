@@ -91,16 +91,19 @@ export interface PiAiProviderProfile {
    */
   modelOverrides?: Record<string, PiAiModelOverride>
   /**
-   * Reasoning-dispatch switches for every `openai-completions` model on this
-   * route; each model's own `compat` overrides per field. What neither sets
-   * keeps the installed catalog entry's value, then pi-ai's baseURL-derived
-   * detection.
+   * Reasoning-dispatch and instruction-role switches for every
+   * `openai-completions` model on this route; each model's own `compat`
+   * overrides per field. What neither sets keeps the installed catalog entry's
+   * value, then pi-ai's baseURL-derived detection. Hand-declared routes default
+   * `supportsDeveloperRole` to false because private OpenAI-compatible
+   * gateways frequently reject `role: developer`.
    */
   compat?: PiAiCompatProfile
   /**
    * Context capacity for a model this route lists that neither the entry nor
-   * the installed catalog sizes (default 262,144). A guess by construction, so
-   * a deployment whose gateway serves smaller models corrects it here.
+   * the installed catalog sizes (default 262,144). Model-name inference may
+   * replace this generic fallback for a third-party large-context variant; a
+   * deployment whose gateway serves smaller models can correct it here.
    */
   defaultContextWindow?: number
   /**
@@ -188,6 +191,7 @@ const thinkingBudgets = z.object({
 const compatProfile: z<PiAiCompatProfile> = z.object({
   thinkingFormat: z.union(SUPPORTED_THINKING_FORMATS),
   supportsReasoningEffort: z.boolean(),
+  supportsDeveloperRole: z.boolean(),
 })
 
 /**

@@ -7,7 +7,7 @@ import type {
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -139,6 +139,107 @@ describe('PiAiAdapter provider routing', () => {
       failure: { code: 'UNSUPPORTED_REASONING_EFFORT' },
     })
     expect(server.requests).toHaveLength(2)
+  })
+
+  it('maps the inferred Codex-style levels for an undeclared third-party model', async () => {
+    const server = await mockServer([{ events: textEvents }, { events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'third-party': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'qwen3.8-max' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'third-party',
+      model: 'qwen3.8-max',
+      reasoningEffort: ReasoningEffortId('medium'),
+      messages: [],
+    })
+    expect(server.requests[0]).toMatchObject({ enable_thinking: true })
+
+    await assemble(ctx, {
+      provider: 'third-party',
+      model: 'qwen3.8-max',
+      reasoningEffort: ReasoningEffortId('max'),
+      messages: [],
+    })
+    expect(server.requests[1]).toMatchObject({ enable_thinking: true })
+  })
+
+  it('keeps reasoning levels while sending system instead of developer to hand-declared gateways', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'console-go': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'kimi-k3' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'console-go',
+      model: 'kimi-k3',
+      reasoningEffort: ReasoningEffortId('max'),
+      system: 'system prompt',
+      maxTokens: 77,
+      messages: [],
+    })
+
+    const request = server.requests[0] as {
+      messages?: { role?: string }[]
+      reasoning_effort?: string
+      max_tokens?: number
+      max_completion_tokens?: number
+    }
+    expect(request.reasoning_effort).toBe('max')
+    expect(request.max_tokens).toBe(77)
+    expect(request).not.toHaveProperty('max_completion_tokens')
+    expect(request.messages?.[0]?.role).toBe('system')
+    expect(request.messages?.some(message => message.role === 'developer')).toBe(false)
+  })
+
+  it('does not persist a K3 reasoning-only stop as a successful empty answer', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":"private thought"},"index":0,"finish_reason":null}]}',
+        '{"choices":[{"delta":{"content":null,"reasoning_content":null},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'console-go': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'kimi-k3' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'console-go',
+      model: 'kimi-k3',
+      reasoningEffort: ReasoningEffortId('max'),
+      messages: [],
+    })
+
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: EMPTY_RESPONSE_CODE } })
+    expect(result.message.content).toEqual([{ type: 'reasoning', text: 'private thought' }])
   })
 
   it('preserves omitted profile options when constructing the adapter directly', async () => {

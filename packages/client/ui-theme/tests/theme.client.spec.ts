@@ -3,13 +3,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { stubSettingsScope, type StubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
 import type {
+  SkinId,
+  ThemePreference,
   ThemeSettings,
   ThemeSnapshot,
   ThemeTokenOverrides,
 } from '@deepseek-ai/dsh-client-ui-theme/client'
 import { ThemeRuntime } from '@deepseek-ai/dsh-client-ui-theme/client'
+import {
+  CUSTOM_SKIN, DEFAULT_SKIN, EMPTY_CUSTOM_SKIN, skinAppearance, skinChrome,
+} from '../src/theme-settings.ts'
 
-const make = (host = stubSettingsScope<ThemeSettings>()): {
+/**
+ * A scope standing at the stock look, so cases that exercise preference
+ * resolution are not also exercising skin pinning: a skin declares the scheme
+ * its palette was generated for and pins it, and `none` is the only value that
+ * defers to the preference.
+ */
+const stockScope = (): StubSettingsScope<ThemeSettings> => {
+  const host = stubSettingsScope<ThemeSettings>()
+  host.publish({ status: 'ready', value: { preference: 'system', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
+  return host
+}
+
+const make = (host = stockScope()): {
   ctx: Context
   theme: ThemeRuntime
   events: ThemeSnapshot[]
@@ -17,8 +34,11 @@ const make = (host = stubSettingsScope<ThemeSettings>()): {
 } => {
   const ctx = new Context()
   const events: ThemeSnapshot[] = []
+  // Subscribed after construction: adopting the standing section is setup, not
+  // a change under test, and every count below is of post-construction events.
+  const theme = new ThemeRuntime(ctx, host.scope)
   ctx.on('theme/change', (snapshot) => { events.push(snapshot) })
-  return { ctx, theme: new ThemeRuntime(ctx, host.scope), events, host }
+  return { ctx, theme, events, host }
 }
 
 describe('ThemeRuntime', () => {
@@ -50,17 +70,17 @@ describe('ThemeRuntime', () => {
 
   it('adopts a published Host section without writing it back', () => {
     const { theme, events, host } = make()
-    host.publish({ status: 'ready', value: { preference: 'dark' }, revision: 1, writable: true })
+    host.publish({ status: 'ready', value: { preference: 'dark', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
     expect(theme.getTheme().preference).toBe('dark')
     expect(events).toHaveLength(1)
     expect(host.set).not.toHaveBeenCalled()
-    host.publish({ value: { preference: 'dark' }, revision: 2 })
+    host.publish({ value: { preference: 'dark', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 2 })
     expect(events).toHaveLength(1)
   })
 
   it('adopts a section already standing at construction', () => {
     const host = stubSettingsScope<ThemeSettings>()
-    host.publish({ status: 'ready', value: { preference: 'dark' }, revision: 1, writable: true })
+    host.publish({ status: 'ready', value: { preference: 'dark', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
     const { theme } = make(host)
     expect(theme.getTheme().preference).toBe('dark')
   })
@@ -98,13 +118,90 @@ describe('ThemeRuntime', () => {
     expect(theme.getTheme().preference).toBe('dark')
   })
 
+  describe('a skin pins the scheme its palette was generated for', () => {
+    const withSkin = (preference: ThemePreference, skin: SkinId): ThemeRuntime => {
+      const host = stubSettingsScope<ThemeSettings>()
+      host.publish({ status: 'ready', value: { preference, skin, customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
+      return make(host).theme
+    }
+
+    it('resolves dark for a dark skin even under a light preference', () => {
+      const snapshot = withSkin('light', 'waves-1').getTheme()
+      expect(snapshot.preference).toBe('light')
+      expect(snapshot.active.colorScheme).toBe('dark')
+    })
+
+    it('resolves light for a light skin even under a dark preference', () => {
+      const snapshot = withSkin('dark', 'qq-2008').getTheme()
+      expect(snapshot.preference).toBe('dark')
+      expect(snapshot.active.colorScheme).toBe('light')
+    })
+
+    it('follows the preference again once the skin is cleared', () => {
+      const host = stubSettingsScope<ThemeSettings>()
+      host.publish({ status: 'ready', value: { preference: 'dark', skin: 'waves-1', customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
+      const { theme } = make(host)
+      host.publish({ value: { preference: 'dark', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 2 })
+      expect(theme.getTheme().active.colorScheme).toBe('dark')
+      host.publish({ value: { preference: 'light', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 3 })
+      expect(theme.getTheme().active.colorScheme).toBe('light')
+    })
+
+    it('falls back to the default skin for an id this build no longer generates', () => {
+      // A settings document outlives the theme file it names. The schema would
+      // already have substituted the default for such a value, so the runtime
+      // agrees with it rather than throwing or inventing a third answer.
+      const host = stubSettingsScope<ThemeSettings>()
+      host.publish({
+        status: 'ready',
+        value: { preference: 'dark', skin: 'retired-skin' as SkinId, customSkin: EMPTY_CUSTOM_SKIN },
+        revision: 1,
+        writable: true,
+      })
+      expect(skinAppearance(DEFAULT_SKIN)).toBe('light')
+      expect(make(host).theme.getTheme().active.colorScheme).toBe('light')
+    })
+
+    it('reads the custom skin from the document instead of the manifest', () => {
+      // The custom skin has no manifest entry to look up: its scheme and chrome
+      // were decided by the picture the user picked, and they travel with it.
+      const made = { ...EMPTY_CUSTOM_SKIN, image: 'skin-1.webp', appearance: 'dark' as const, chrome: 'neon' as const }
+      expect(skinAppearance(CUSTOM_SKIN, made)).toBe('dark')
+      expect(skinChrome(CUSTOM_SKIN, made)).toBe('neon')
+
+      const host = stubSettingsScope<ThemeSettings>()
+      host.publish({
+        status: 'ready',
+        value: { preference: 'light', skin: CUSTOM_SKIN, customSkin: made },
+        revision: 1,
+        writable: true,
+      })
+      expect(make(host).theme.getTheme().active.colorScheme).toBe('dark')
+    })
+
+    it('degrades the custom skin to the stock look until an image exists', () => {
+      // Selecting `custom` before making one is a normal state, so it resolves
+      // to "nothing pinned" and the preference wins, image or no image.
+      expect(skinAppearance(CUSTOM_SKIN, EMPTY_CUSTOM_SKIN)).toBeNull()
+      expect(skinChrome(CUSTOM_SKIN, EMPTY_CUSTOM_SKIN)).toBeNull()
+      expect(skinAppearance(CUSTOM_SKIN)).toBeNull()
+      expect(skinChrome(CUSTOM_SKIN)).toBeNull()
+      expect(withSkin('dark', CUSTOM_SKIN).getTheme().active.colorScheme).toBe('dark')
+      // The same "nothing pinned" answer covers the stock look and an id the
+      // manifest no longer carries.
+      expect(skinChrome('none')).toBeNull()
+      expect(skinChrome('retired-skin' as SkinId)).toBeNull()
+    })
+  })
+
   it('revision increases monotonically across every publish', () => {
     const { theme, events } = make()
     theme.setTheme('dark')
     theme.setTheme('light')
     const dispose = theme.register({ id: 'sepia', colorScheme: 'dark', tokens: {} })
     dispose()
-    expect(events.map(e => e.revision)).toEqual([1, 2, 3, 4])
+    // Starts at 2: adopting the standing section at construction spent 1.
+    expect(events.map(e => e.revision)).toEqual([2, 3, 4, 5])
   })
 
   it('stacks reversible token overrides in call order and selects the active palette value', () => {

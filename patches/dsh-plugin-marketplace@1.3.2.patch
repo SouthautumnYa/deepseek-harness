@@ -1,0 +1,224 @@
+diff --git a/lib/index.js b/lib/index.js
+index 1f3753c317d0f81a747510193f15ad76f3e52d66..96efc2064e4af4235f7e709bfd22bc9333d76692 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,8 +1,8 @@
+ import { execFile } from "node:child_process";
+ import { promisify } from "node:util";
+-import { mkdir, rm, cp, readFile, writeFile, stat, readdir, rename } from "node:fs/promises";
++import { mkdir, rm, cp, readFile, writeFile, stat, readdir, rename, mkdtemp } from "node:fs/promises";
+ import { join, dirname, resolve, sep } from "node:path";
+-import { homedir } from "node:os";
++import { homedir, tmpdir } from "node:os";
+ import { createRequire } from "node:module";
+ 
+ const execFileAsync = promisify(execFile);
+@@ -30,6 +30,10 @@ const MAX_PAGES = 50;
+ const CACHE_TTL_MS = 10 * 60 * 1000;
+ /** m6：外部网络请求超时——CDN / GitHub 挂起时快速失败并尝试下一数据源，避免列表服务长期阻塞。 */
+ const FETCH_TIMEOUT_MS = 15000;
++/** GitHub 安装源：Windows 网络偶发 reset 时先重试 git，再回退到 codeload 压缩包。 */
++const GITHUB_CLONE_TIMEOUT_MS = 180000;
++const GITHUB_ARCHIVE_TIMEOUT_MS = 120000;
++const GITHUB_ARCHIVE_ATTEMPTS = 2;
+ /** 环境变量检测：覆盖全大写后缀与 camelCase 形态；_PASS 需要前文至少 3 个字符，避免误伤 BY_PASS 等词。 */
+ const ENV_PATTERN = /\b(?:[A-Z][A-Z0-9_]{1,}(?:API_KEY|_KEY|_TOKEN|_SECRET|_PASSWORD)|[A-Z][A-Z0-9_]{3,}_PASS|[a-z][A-Za-z0-9]*(?:ApiKey|Key|Token|Secret|Password|Pass))\b/g;
+ 
+@@ -383,6 +387,13 @@ const MESSAGES = {
+   zh: {
+     "step1": "[1/5] 克隆 https://github.com/{repo} ...",
+     "cloneDone": "克隆完成。",
++    "cloneRetry": "Git 克隆失败，正在使用 HTTP/1.1 重试（第 {attempt}/{total} 次）...",
++    "cloneAttemptFailed": "Git 克隆第 {attempt} 次失败：{err}",
++    "cloneFallback": "Git 克隆失败，正在回退到 GitHub codeload 压缩包下载。",
++    "archiveDownload": "正在下载 GitHub codeload {format} 源码包（第 {attempt}/{total} 次）...",
++    "archiveAttemptFailed": "codeload {format} 回退失败：{err}",
++    "archiveDone": "已通过 GitHub codeload 下载并解压，继续安装。",
++    "cloneAllFailed": "Git 克隆和 GitHub codeload 回退均失败：{err}",
+     "step2": "[2/5] 识别安装类型: {type}",
+     "type.skill": "skill",
+     "type.agent-preset": "agent 预设",
+@@ -465,6 +476,13 @@ const MESSAGES = {
+   en: {
+     "step1": "[1/5] Cloning https://github.com/{repo} ...",
+     "cloneDone": "Clone complete.",
++    "cloneRetry": "Git clone failed; retrying with HTTP/1.1 (attempt {attempt}/{total}) ...",
++    "cloneAttemptFailed": "Git clone attempt {attempt} failed: {err}",
++    "cloneFallback": "Git clone failed; falling back to a GitHub codeload archive.",
++    "archiveDownload": "Downloading the GitHub codeload {format} archive (attempt {attempt}/{total}) ...",
++    "archiveAttemptFailed": "codeload {format} fallback failed: {err}",
++    "archiveDone": "Downloaded and extracted through GitHub codeload; continuing install.",
++    "cloneAllFailed": "Git clone and the GitHub codeload fallback both failed: {err}",
+     "step2": "[2/5] Install type: {type}",
+     "type.skill": "skill",
+     "type.agent-preset": "agent preset",
+@@ -938,6 +956,158 @@ async function runPnpm(args, opts) {
+   return await execFileAsync(process.platform === "win32" ? "pnpm.cmd" : "pnpm", args, opts);
+ }
+ 
++function commandFailureText(error) {
++  const parts = [error?.stderr, error?.stdout, error?.message]
++    .map((value) => String(value ?? "").trim())
++    .filter(Boolean);
++  return (parts[0] ?? "unknown error").replace(/\s+/g, " ").slice(0, 800);
++}
++
++async function fetchArchiveToFile(url, archivePath, fetchImpl, logLine, lang, format) {
++  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
++  let lastError = null;
++  for (let attempt = 1; attempt <= GITHUB_ARCHIVE_ATTEMPTS; attempt++) {
++    logLine(t(lang, "archiveDownload", { format, attempt, total: GITHUB_ARCHIVE_ATTEMPTS }));
++    const controller = new AbortController();
++    const timeout = setTimeout(() => controller.abort(), GITHUB_ARCHIVE_TIMEOUT_MS);
++    try {
++      const response = await fetchImpl(url, {
++        redirect: "follow",
++        signal: controller.signal,
++        headers: { "user-agent": "dsh-plugin-marketplace", accept: "application/octet-stream" }
++      });
++      if (!response || !response.ok) {
++        throw new Error(`HTTP ${response?.status ?? "unknown"}`);
++      }
++      const bytes = await response.arrayBuffer();
++      if (!bytes || bytes.byteLength === 0) throw new Error("empty archive response");
++      await writeFile(archivePath, Buffer.from(bytes));
++      return;
++    } catch (error) {
++      lastError = error;
++    } finally {
++      clearTimeout(timeout);
++    }
++  }
++  throw lastError ?? new Error("archive download failed");
++}
++
++async function extractArchive(archivePath, extractDir, format, { execFileImpl, platform }) {
++  if (format === "tar.gz") {
++    const commands = platform === "win32" ? ["tar.exe", "tar"] : ["tar"];
++    let lastError = null;
++    for (const command of commands) {
++      try {
++        await execFileImpl(command, ["-xzf", archivePath, "-C", extractDir], {
++          timeout: GITHUB_ARCHIVE_TIMEOUT_MS
++        });
++        return;
++      } catch (error) {
++        lastError = error;
++      }
++    }
++    throw lastError ?? new Error("tar is unavailable");
++  }
++  if (platform !== "win32") throw new Error("zip fallback is only available on Windows");
++  const env = { ...buildMinimalEnv(), DSH_MARKET_ARCHIVE: archivePath, DSH_MARKET_DEST: extractDir };
++  await execFileImpl("powershell.exe", [
++    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
++    "-Command",
++    "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath $env:DSH_MARKET_ARCHIVE -DestinationPath $env:DSH_MARKET_DEST -Force"
++  ], { timeout: GITHUB_ARCHIVE_TIMEOUT_MS, env });
++}
++
++async function copyArchiveRoot(extractDir, cacheDir) {
++  const entries = await readdir(extractDir, { withFileTypes: true });
++  const roots = entries.filter((entry) => entry.isDirectory());
++  if (roots.length !== 1) {
++    throw new Error(`archive has ${roots.length} top-level directories; expected exactly one`);
++  }
++  const root = join(extractDir, roots[0].name);
++  await cp(root, cacheDir, { recursive: true, force: true });
++  if (!(await exists(cacheDir))) throw new Error("archive extraction produced no repository directory");
++}
++
++async function installFromGitHubArchive(repo, cacheDir, { execFileImpl, fetchImpl, platform, logLine, lang }) {
++  const workDir = await mkdtemp(join(tmpdir(), "dsh-marketplace-"));
++  const formats = [
++    { name: "tar.gz", suffix: "tar.gz" },
++    { name: "zip", suffix: "zip" }
++  ];
++  const failures = [];
++  try {
++    for (const format of formats) {
++      const archivePath = join(workDir, `repo.${format.suffix}`);
++      const extractDir = join(workDir, `extract-${format.name.replace(".", "-")}`);
++      await mkdir(extractDir, { recursive: true });
++      try {
++        await fetchArchiveToFile(
++          `https://codeload.github.com/${repo}/${format.suffix}/HEAD`,
++          archivePath,
++          fetchImpl,
++          logLine,
++          lang,
++          format.name
++        );
++        await extractArchive(archivePath, extractDir, format.name, { execFileImpl, platform });
++        await copyArchiveRoot(extractDir, cacheDir);
++        return format.name;
++      } catch (error) {
++        const detail = commandFailureText(error);
++        failures.push(`${format.name}: ${detail}`);
++        logLine(t(lang, "archiveAttemptFailed", { format: format.name, err: detail }));
++        await rm(cacheDir, { recursive: true, force: true }).catch(() => {});
++      }
++    }
++  } finally {
++    await rm(workDir, { recursive: true, force: true }).catch(() => {});
++  }
++  throw new Error(failures.join(" | ") || "no archive fallback succeeded");
++}
++
++/**
++ * GitHub 获取层：先用浅克隆，遇到 Windows 常见的 connection reset 时强制 HTTP/1.1 重试，
++ * 两次 Git 均失败再用 codeload tar.gz，最后用 PowerShell 解压 zip。成功前必须验证仓库目录存在，
++ * 所有失败都会带上真实错误返回给 UI，不会把未下载的目录当成安装成功。
++ */
++async function installGitHubRepository(repo, cacheDir, logLine, lang, options = {}) {
++  const execFileImpl = options.execFileImpl ?? execFileAsync;
++  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
++  const platform = options.platform ?? process.platform;
++  const url = `https://github.com/${repo}.git`;
++  const attempts = [
++    ["git", ["clone", "--depth", "1", "--no-tags", url, cacheDir]],
++    ["git", ["-c", "http.version=HTTP/1.1", "-c", "http.maxRequests=1", "clone", "--depth", "1", "--no-tags", url, cacheDir]]
++  ];
++  const failures = [];
++  for (let index = 0; index < attempts.length; index++) {
++    if (index > 0) logLine(t(lang, "cloneRetry", { attempt: index + 1, total: attempts.length }));
++    try {
++      await execFileImpl(attempts[index][0], attempts[index][1], { timeout: GITHUB_CLONE_TIMEOUT_MS });
++      if (!(await exists(cacheDir))) throw new Error("git clone completed without creating the repository directory");
++      return "git";
++    } catch (error) {
++      const detail = commandFailureText(error);
++      failures.push(`git ${index + 1}: ${detail}`);
++      logLine(t(lang, "cloneAttemptFailed", { attempt: index + 1, err: detail }));
++      await rm(cacheDir, { recursive: true, force: true }).catch(() => {});
++    }
++  }
++
++  logLine(t(lang, "cloneFallback"));
++  try {
++    await installFromGitHubArchive(repo, cacheDir, { execFileImpl, fetchImpl, platform, logLine, lang });
++    return "archive";
++  } catch (error) {
++    const detail = commandFailureText(error);
++    logLine(t(lang, "archiveAttemptFailed", { format: "all", err: detail }));
++    failures.push(`codeload: ${detail}`);
++    throw new Error(t(lang, "cloneAllFailed", { err: failures.join(" | ").slice(-2400) }));
++  }
++}
++
++export { installGitHubRepository as __testInstallGitHubRepository };
++
+ /** 递归收集 exports 子树中的全部字符串入口（覆盖 default/import/require/browser 等条件与嵌套对象）。 */
+ function collectExportTargets(node, out) {
+   if (typeof node === "string") {
+@@ -1259,8 +1429,8 @@ function apply(ctx) {
+           logLine(t(langFull, "step1", { repo }));
+           await mkdir(CACHE_DIR, { recursive: true });
+           await rm(cacheDir, { recursive: true, force: true });
+-          await execFileAsync("git", ["clone", "--depth", "1", `https://github.com/${repo}.git`, cacheDir], { timeout: 180000 });
+-          logLine(t(langFull, "cloneDone"));
++          const source = await installGitHubRepository(repo, cacheDir, logLine, langFull);
++          logLine(t(langFull, source === "git" ? "cloneDone" : "archiveDone"));
+ 
+           const type = await detectType(cacheDir);
+           logLine(t(langFull, "step2", { type: t(langFull, `type.${type}`) }));

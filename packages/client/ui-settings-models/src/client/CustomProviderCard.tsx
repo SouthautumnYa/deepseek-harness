@@ -29,7 +29,7 @@ import { EditorFooter } from './EditorFooter.tsx'
 import { validateDeepSeekModels } from './DeepSeekModelsEditor.tsx'
 import { ModelListEditor } from './ModelListEditor.tsx'
 import type { ModelDraft } from './ModelListEditor.tsx'
-import { deriveKeyRef, messageOf } from './store.ts'
+import { deriveKeyRef, messageOf, protocolLabel } from './store.ts'
 import type { en } from './locales.ts'
 import styles from './ModelsSection.module.css'
 
@@ -81,7 +81,9 @@ export function CustomProviderCard(props: CustomProviderCardProps): ReactNode {
   const [route, setRoute] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [baseURL, setBaseURL] = useState('')
-  const [protocol, setProtocol] = useState(protocols[0] ?? '')
+  const [protocol, setProtocol] = useState(
+    protocols.includes('openai-completions') ? 'openai-completions' : protocols[0] ?? '',
+  )
   const [keyDraft, setKeyDraft] = useState('')
   const [models, setModels] = useState<readonly ModelDraft[]>([])
   const [busy, setBusy] = useState(false)
@@ -242,7 +244,7 @@ export function CustomProviderCard(props: CustomProviderCardProps): ReactNode {
           disabled={profileDisabled}
           onChange={(event) => { setProtocol(event.target.value) }}
         >
-          {protocols.map(choice => <option key={choice} value={choice}>{choice}</option>)}
+          {protocols.map(choice => <option key={choice} value={choice}>{protocolLabel(choice, t)}</option>)}
         </select>
       </div>
       <div className={styles['field']}>

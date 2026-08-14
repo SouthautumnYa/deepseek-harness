@@ -13,6 +13,7 @@ import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { createModels, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type { Api, Model, OpenAICompletionsCompat, Provider } from '@earendil-works/pi-ai'
 import { resolveProfiles } from '../src/config.ts'
+import { inferThirdPartyContextWindow } from '../src/catalog.ts'
 import { buildProvider, supportedProtocols } from '../src/provider.ts'
 import { assemble } from './assemble.ts'
 import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
@@ -112,16 +113,33 @@ describe('hand-declared providers', () => {
     })
   })
 
-  it('offers no reasoning control it could not honour', async () => {
+  it('offers Codex-style reasoning levels for an undeclared third-party model', async () => {
     const server = await mockServer([])
     const ctx = await harness(gateway(`${server.url}/v1`))
 
-    // pi-ai reports a model with no reasoning metadata as supporting the single
-    // level `off`, but `off` is translated to *omitting* the reasoning option —
-    // byte-for-byte the same request as naming no effort — so a provider whose
-    // own default is to think would keep thinking with `off` selected. The
-    // capability is reported unavailable instead of offering that control.
-    expect((await ctx.llm.resolveModelInfo('acme-gateway', 'acme-large')).reasoning).toBeUndefined()
+    expect((await ctx.llm.resolveModelInfo('acme-gateway', 'acme-large')).reasoning).toEqual({
+      efforts: [
+        { id: 'off', name: 'Off' },
+        { id: 'low', name: 'Low' },
+        { id: 'medium', name: 'Medium' },
+        { id: 'high', name: 'High' },
+        { id: 'max', name: 'Max' },
+      ],
+      defaultEffort: 'off',
+    })
+
+    // An ordinary third-party chat model can explicitly opt out without
+    // losing the rest of its route configuration.
+    const disabled = await harness({
+      providers: {
+        'plain-gateway': {
+          api: 'openai-completions',
+          baseURL: server.url,
+          models: [{ id: 'plain-chat', reasoningEfforts: false }],
+        },
+      },
+    })
+    expect((await disabled.llm.resolveModelInfo('plain-gateway', 'plain-chat')).reasoning).toBeUndefined()
 
     // A catalog route is unaffected: its models carry the metadata that makes
     // `off` actually disable thinking.
@@ -130,6 +148,64 @@ describe('hand-declared providers', () => {
     if (catalogModel === undefined) throw new Error('the installed catalog ships no deepseek model')
     expect((await withCatalog.llm.resolveModelInfo('deepseek', catalogModel.id)).reasoning?.efforts.map(e => e.id))
       .toContain('off')
+  })
+
+  it('infers third-party context capacity from model names without reading versions as sizes', () => {
+    expect(inferThirdPartyContextWindow('qwen3.8-max', undefined, 262_144)).toBe(1_000_000)
+    expect(inferThirdPartyContextWindow('Qwen3.8 Max', undefined, 262_144)).toBe(1_000_000)
+    expect(inferThirdPartyContextWindow('deepseek-v4-flash', undefined, 262_144)).toBe(1_000_000)
+    expect(inferThirdPartyContextWindow('DeepSeek V4 Pro', undefined, 262_144)).toBe(1_000_000)
+    // These ids have no context suffix, but pi-ai's installed catalog already
+    // knows their capacities. Third-party routes must reuse that metadata.
+    // Ambiguous model families are deliberately left at the configured
+    // fallback; the deployment can provide an explicit contextWindow instead
+    // of silently borrowing another provider's capacity.
+    expect(inferThirdPartyContextWindow('glm-5.2', undefined, 262_144)).toBe(1_000_000)
+    expect(inferThirdPartyContextWindow('glm-5.3', undefined, 262_144)).toBe(262_144)
+    expect(inferThirdPartyContextWindow('kimi-k3', undefined, 262_144)).toBe(1_048_576)
+    expect(inferThirdPartyContextWindow('k3', 'Kimi K3', 262_144, 'openai-completions')).toBe(1_048_576)
+    expect(inferThirdPartyContextWindow('gpt-5.6-luna', undefined, 262_144)).toBe(262_144)
+    expect(inferThirdPartyContextWindow('gemini-2.5-pro', undefined, 262_144)).toBe(262_144)
+    expect(inferThirdPartyContextWindow('acme-128k', undefined, 262_144)).toBe(128_000)
+    expect(inferThirdPartyContextWindow('Model 128K', undefined, 262_144)).toBe(128_000)
+    expect(inferThirdPartyContextWindow('acme-131072', undefined, 262_144)).toBe(131_072)
+    // Date/version fragments are not capacities.
+    expect(inferThirdPartyContextWindow('gemini-2.5-computer-use-preview-10-2025', undefined, 262_144))
+      .toBe(131_072)
+    expect(inferThirdPartyContextWindow('qwen3.8-chat', undefined, 262_144)).toBe(262_144)
+  })
+
+  it('carries inferred capacity from settings through model info and prepared calls', async () => {
+    const dir = await home()
+    const ctx = await bootWithSettings(dir, {})
+    await ctx.settings.update(settingsNamespace('llm-pi-ai'), {
+      providers: {
+        geili: {
+          api: 'openai-completions',
+          baseURL: 'https://geili.test/v1',
+          models: [
+            { id: 'qwen3.8-max' },
+            { id: 'glm-5.2' },
+            { id: 'kimi-k3' },
+          ],
+        },
+      },
+    })
+
+    await expect(ctx.llm.resolveModelInfo('geili', 'qwen3.8-max')).resolves.toMatchObject({
+      context: { contextWindow: 1_000_000 },
+    })
+    await expect(ctx.llm.resolveModelInfo('geili', 'glm-5.2')).resolves.toMatchObject({
+      context: { contextWindow: inferThirdPartyContextWindow('glm-5.2', undefined, 262_144) },
+    })
+
+    const prepared = await ctx.llm.prepareCall({
+      provider: 'geili',
+      model: 'kimi-k3',
+    })
+    expect(prepared.context).toEqual({
+      contextWindow: inferThirdPartyContextWindow('kimi-k3', undefined, 262_144),
+    })
   })
 
   it('joins the configurable-provider directory so a settings surface can reach it', async () => {
@@ -160,7 +236,14 @@ describe('hand-declared providers', () => {
         baseURL: 'https://acme.test',
         // A listing endpoint that discloses nothing but ids still yields a
         // serviceable route.
-        models: [{ id: 'bare' }, { id: 'sized', contextWindow: 8192, maxTokens: 512 }],
+        models: [
+          { id: 'bare' },
+          { id: 'sized', contextWindow: 8192, maxTokens: 512 },
+          { id: 'qwen3.8-max' },
+          // A gateway may have persisted the generic fallback from its listing;
+          // a stronger model-name hint must still unlock the model.
+          { id: 'deepseek-v4-flash', contextWindow: 262_144 },
+        ],
       },
       'tuned-gateway': {
         api: 'openai-completions',
@@ -176,6 +259,8 @@ describe('hand-declared providers', () => {
     expect(modelsOf('acme-gateway')).toMatchObject([
       { id: 'bare', contextWindow: 262_144, maxTokens: 32_768 },
       { id: 'sized', contextWindow: 8192, maxTokens: 512 },
+      { id: 'qwen3.8-max', contextWindow: 1_000_000 },
+      { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
     ])
     // The fallback is a guess, so a deployment whose gateway serves smaller
     // models corrects it once for the whole route.
@@ -775,8 +860,33 @@ describe('reasoning-dispatch compat switches', () => {
       },
     }, 'acme-gateway')
 
-    expect(models.get('dialect-default')?.compat).toEqual({ thinkingFormat: 'deepseek' })
-    expect(models.get('dialect-odd')?.compat).toEqual({ thinkingFormat: 'openai', supportsReasoningEffort: false })
+    expect(models.get('dialect-default')?.compat).toEqual({
+      thinkingFormat: 'deepseek',
+      supportsDeveloperRole: false,
+    })
+    expect(models.get('dialect-odd')?.compat).toEqual({
+      thinkingFormat: 'openai',
+      supportsReasoningEffort: false,
+      supportsDeveloperRole: false,
+    })
+  })
+
+  it('defaults hand-declared gateways to system messages and allows an explicit developer-role override', () => {
+    const models = modelsOf({
+      'acme-gateway': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        models: [
+          { id: 'safe-default' },
+          { id: 'developer-capable', compat: { supportsDeveloperRole: true } },
+          { id: 'developer-disabled', compat: { supportsDeveloperRole: false } },
+        ],
+      },
+    }, 'acme-gateway')
+
+    expect((models.get('safe-default')?.compat as OpenAICompletionsCompat).supportsDeveloperRole).toBe(false)
+    expect((models.get('developer-capable')?.compat as OpenAICompletionsCompat).supportsDeveloperRole).toBe(true)
+    expect((models.get('developer-disabled')?.compat as OpenAICompletionsCompat).supportsDeveloperRole).toBe(false)
   })
 
   it('merges the switches over the catalog entry’s own compat instead of replacing it', () => {

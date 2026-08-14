@@ -13,6 +13,9 @@
     - button "Agent 预设":
       - img
       - text: Agent 预设
+    - button "Token 用量":
+      - img
+      - text: Token 用量
   - button "打开配置文件"
   - button "关闭":
     - img

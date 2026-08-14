@@ -12,6 +12,7 @@ import type {
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { getPath, hasPath, nodeAtPath, rehydrateSchema } from '@deepseek-ai/dsh-client-schema-form'
+import type { ModelsKey } from './locales.ts'
 
 /**
  * Any route key walks a dict schema to the same profile node, so the lookup
@@ -84,6 +85,21 @@ export function protocolChoices(namespace: SettingsNamespaceView | undefined): s
   const list = (node as { type?: string; list?: readonly { value?: unknown }[] } | undefined)
   if (list?.type !== 'union' || list.list === undefined) return []
   return list.list.map(entry => entry.value).filter((value): value is string => typeof value === 'string')
+}
+
+/**
+ * Render a stable wire protocol id as a provider-facing protocol name.
+ * @param protocol - Wire protocol identifier.
+ * @param t - Localizer for known protocol labels.
+ * @returns Localized protocol label, or the original identifier.
+ */
+export function protocolLabel(protocol: string, t: (key: ModelsKey) => string): string {
+  switch (protocol) {
+    case 'openai-completions': return t('protocolOpenAICompletions')
+    case 'openai-responses': return t('protocolOpenAIResponses')
+    case 'anthropic-messages': return t('protocolAnthropicMessages')
+    default: return protocol
+  }
 }
 
 /** The credential reference a resolved profile names (its `apiKeyEnv` field). */

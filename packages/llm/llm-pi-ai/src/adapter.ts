@@ -50,6 +50,7 @@ import type {
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
+import { catalogModels } from './catalog.ts'
 import { toPiContext } from './context.ts'
 import { toStreamChunks } from './stream.ts'
 
@@ -138,15 +139,9 @@ function resolveReasoningLevel(
 /**
  * Selectable reasoning efforts for one model, or nothing at all.
  *
- * A model that carries no reasoning metadata — every hand-declared one, and
- * every catalog model pi-ai marks as non-reasoning — is reported by pi-ai as
- * supporting the single level `off`. Passing that through would offer a control
- * that cannot do what it says: `off` is translated to *omitting* the reasoning
- * option, which for such a model is byte-for-byte the same request as naming no
- * effort — so a provider whose own default is to think would keep thinking with
- * `off` selected. Omitting `reasoning` entirely is the seam's way of saying the
- * capability is unavailable, which leaves the surface offering only the
- * provider's default.
+ * Third-party models receive an adapter default of `off` when they expose the
+ * inferred Codex-style capability. Shipped catalog models keep their own
+ * provider default unless the profile configures one.
  * @param model - the resolved model descriptor.
  * @param defaultLevel - the profile's configured effort, already validated.
  * @returns the `reasoning` field, or an empty object when none can be offered.
@@ -257,7 +252,12 @@ export class PiAiAdapter extends LlmAdapter {
       const snapshot = this.current()
       const profile = this.profileOf(snapshot, provider)
       const resolvedModel = this.modelOf(snapshot, provider, model)
-      const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+      const defaultLevel = profile.reasoning !== undefined
+        ? describableReasoningLevel(resolvedModel, profile.reasoning)
+        : !catalogModels(profile.provider).has(resolvedModel.id)
+          && getSupportedThinkingLevels(resolvedModel).includes('off')
+          ? 'off'
+          : undefined
       // Only a cap the deployment configured is a request default; the
       // catalog's `maxTokens` sizes the model and stops there.
       const configuredMaxTokens = profile.configuredMaxTokens.get(model)

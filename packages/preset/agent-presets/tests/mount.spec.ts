@@ -248,6 +248,11 @@ describe('rejecting a composition that cannot be used', () => {
       .rejects.toThrow(/first-missing[\s\S]*second-missing/)
   })
 
+  it('keeps nested loader causes in the mount diagnostic', async () => {
+    await expect(agentOn(ctx, 'sess-caused', 'caused'))
+      .rejects.toThrow(/inner-loader-failure/)
+  })
+
   it('names the unresolved service when a row never activates', async () => {
     await expect(agentOn(ctx, 'sess-pending', 'pending'))
       .rejects.toThrow(/waiting for serviceThatDoesNotExist/)
@@ -331,7 +336,7 @@ describe('the preset roster', () => {
 
     // `not-a-preset` is the fixture ghost: no composition file, listed broken.
     expect(listed.map(preset => preset.id).sort())
-      .toEqual(['broken', 'isolated', 'late', 'leaky', 'minimal', 'not-a-preset', 'pending', 'standard', 'two-broken'])
+      .toEqual(['broken', 'caused', 'isolated', 'late', 'leaky', 'minimal', 'not-a-preset', 'pending', 'standard', 'two-broken'])
     expect(listed.find(preset => preset.id === 'standard')?.trust).toBe('system')
     expect(listed.find(preset => preset.id === 'not-a-preset')?.broken).toMatch(/is missing/)
   })

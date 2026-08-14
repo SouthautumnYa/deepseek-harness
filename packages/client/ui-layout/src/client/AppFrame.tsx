@@ -28,9 +28,11 @@ function CenterColumn(props: { children?: ReactNode }) {
   return <div className={css.centerCol}>{props.children}</div>
 }
 
-/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
+/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close).
+ * deepseek-harness-skin: `data-qq-show` lets QQ skins restyle the right panel
+ * as the classic QQ Show / profile column. */
 function DetailsColumn(props: { children?: ReactNode }) {
-  return <div className={css.detailsCol}>{props.children}</div>
+  return <div className={css.detailsCol} data-qq-show>{props.children}</div>
 }
 
 /**
@@ -97,6 +99,12 @@ export function AppFrame({
   })
   const frameRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState(() => window.innerWidth)
+  // deepseek-harness-skin: XP-style window chrome fold (the 「－」 button).
+  const [titlebarCollapsed, setTitlebarCollapsed] = useState(false)
+  const sessionTitle = useSessions((s) => {
+    const current = s.current
+    return current !== undefined ? s.byId[current]?.title : undefined
+  })
 
   const lastSession = useRef(detailsSession)
   useLayoutEffect(() => {
@@ -165,11 +173,45 @@ export function AppFrame({
     <div
       ref={frameRef}
       className={css.frame}
+      data-app-frame
       style={{ gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
       data-details-collapsed={cols.details === 0 || undefined}
       data-dragging={dragging || undefined}
     >
+      {/* deepseek-harness-skin: window chrome bar. Layout lives here; every
+          visual rule belongs to the skin sheets, which show it only under an
+          XP-style skin (`body[data-dsh-skin=…] [data-frame-titlebar]`). */}
+      {!titlebarCollapsed && (
+        <div className={css.titlebar} data-frame-titlebar>
+          <span className={css.titlebarBrand} data-frame-titlebar-brand aria-hidden="true">🐧</span>
+          <span className={css.titlebarTitle} data-frame-titlebar-title>
+            DeepSeek Harness{sessionTitle === undefined ? '' : ` — ${sessionTitle}`}
+          </span>
+          {/* QQ skins show the classic account id in the titlebar. */}
+          <span className={css.titlebarId} data-frame-titlebar-id aria-label="QQ 号">488137</span>
+          <div className={css.titlebarControls} data-frame-titlebar-controls>
+            <button
+              type="button"
+              className={css.titlebarButton}
+              data-frame-titlebar-button
+              aria-label="最小化（折叠标题栏）"
+              onClick={() => { setTitlebarCollapsed(true) }}
+            >
+              －
+            </button>
+            <button
+              type="button"
+              className={css.titlebarButton}
+              data-frame-titlebar-button
+              aria-label="切换侧栏"
+              onClick={() => { actions.toggleSidebar() }}
+            >
+              □
+            </button>
+          </div>
+        </div>
+      )}
       <div className={css.sidebarCol}>
         {/* Render-site slot call with live concession output: a closed
             sidebar keeps the mounted slot at the compact-rail width, and the

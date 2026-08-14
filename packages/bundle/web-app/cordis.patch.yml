@@ -263,6 +263,12 @@
     - id: ui-settings-plugins
       name: '@deepseek-ai/dsh-client-ui-settings-plugins'
 
+    # Community marketplace: GitHub-backed DSH plugins and general Skills.
+    # The package is pinned in this bundle's manifest so the desktop runtime
+    # carries the same marketplace version in development and packaged builds.
+    - id: plugin-marketplace
+      name: 'dsh-plugin-marketplace'
+
     # Plan control: the composer plan seat over the plan projection + /plan channel.
     - id: ui-plan
       name: '@deepseek-ai/dsh-client-ui-plan'

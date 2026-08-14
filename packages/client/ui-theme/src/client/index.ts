@@ -19,15 +19,19 @@ import type { AppearanceRowInjected } from './AppearanceRow.tsx'
 import { AppearanceRow } from './AppearanceRow.tsx'
 import { createAppearanceRowStore } from './settings-store.ts'
 import { en, zh, type ThemeKey } from './locales.ts'
+import { applyCustomSkinStyle, buildCustomSkin } from './custom-skin.ts'
 import {
-  DEFAULT_PREFERENCE, isThemePreference, THEME_PREFERENCE_FIELD, THEME_SETTINGS_NAMESPACE,
-  type ThemePreference, type ThemeSettings,
+  CUSTOM_SKIN, CUSTOM_SKIN_FIELD, DEFAULT_PREFERENCE, DEFAULT_SKIN, EMPTY_CUSTOM_SKIN,
+  isSkinId, isThemePreference, sameCustomSkin, SKIN_FIELD, skinAppearance, skinChrome,
+  THEME_PREFERENCE_FIELD, THEME_SETTINGS_NAMESPACE,
+  type CustomSkin, type SkinId, type ThemePreference, type ThemeSettings,
 } from '../theme-settings.ts'
 
 export type { AppearanceRowComponentProps, AppearanceRowInjected } from './AppearanceRow.tsx'
 export type { AppearanceRowState } from './settings-store.ts'
 export type { ThemeKey } from './locales.ts'
-export type { ThemePreference, ThemeSettings } from '../theme-settings.ts'
+export { CUSTOM_SKIN, EMPTY_CUSTOM_SKIN } from '../theme-settings.ts'
+export type { CustomSkin, SkinId, ThemePreference, ThemeSettings } from '../theme-settings.ts'
 
 /** Namespace owning this feature's settings-row copy. */
 export const SETTINGS_NS = 'settings.theme'
@@ -152,6 +156,10 @@ export class ThemeRuntime {
   private readonly host: SettingsScope<ThemeSettings>
   private themes: ThemeDefinition[] = [...BUILTIN_THEMES]
   private preference: ThemePreference
+  /** Active skin, read only to resolve the scheme it pins. */
+  private skin: SkinId
+  /** The user's own skin, read for the same reason: it pins a scheme too. */
+  private custom: CustomSkin = EMPTY_CUSTOM_SKIN
   private revision = 0
   private snapshot: ThemeSnapshot
   private readonly media: MediaQueryList | undefined
@@ -168,6 +176,7 @@ export class ThemeRuntime {
     this.ctx = ctx
     this.host = host
     this.preference = DEFAULT_PREFERENCE
+    this.skin = DEFAULT_SKIN
     // Non-browser runs (node e2e booting the client tree) have no matchMedia.
     this.media = typeof matchMedia === 'undefined' ? undefined : matchMedia('(prefers-color-scheme: dark)')
     this.snapshot = this.buildSnapshot()
@@ -229,11 +238,23 @@ export class ThemeRuntime {
     this.publish()
   }
 
-  /** Adopt the scope's accepted durable preference without writing it back. */
+  /**
+   * Adopt the scope's accepted durable preference and skin without writing
+   * either back. The skin is adopted here too because it participates in scheme
+   * resolution, so a skin switch has to republish the snapshot the presenter
+   * projects — not only the CSS attribute the plugin body writes.
+   */
   private adopt(): void {
     const section = this.host.getSnapshot().value
-    if (section === undefined || this.preference === section.preference) return
+    if (section === undefined) return
+    // A section can predate the skin field; the schema's default is what the
+    // rest of the boot path assumed for it, so agree rather than invent.
+    const skin = isSkinId(section.skin) ? section.skin : DEFAULT_SKIN
+    const custom = section.customSkin
+    if (this.preference === section.preference && this.skin === skin && sameCustomSkin(this.custom, custom)) return
     this.preference = section.preference
+    this.skin = skin
+    this.custom = custom
     this.publish()
   }
 
@@ -290,9 +311,16 @@ export class ThemeRuntime {
   }
 
   private buildSnapshot(): ThemeSnapshot {
-    const resolvedId = this.preference === 'system'
-      ? (this.media?.matches === true ? 'dark' : 'light')
-      : this.preference
+    // A skin ships one palette, generated for one scheme, so while it is active
+    // it pins the resolved scheme — which is what makes a skin declared `dark`
+    // reach the presenter as dark rather than as dark-looking colours sitting
+    // on the light semantic layer. Registered third-party themes carry their
+    // own palette and keep precedence; only the built-in preferences defer.
+    const pinned = skinAppearance(this.skin, this.custom)
+    let resolvedId: string
+    if (pinned !== null && isThemePreference(this.preference)) resolvedId = pinned
+    else if (this.preference === 'system') resolvedId = this.media?.matches === true ? 'dark' : 'light'
+    else resolvedId = this.preference
     // Both built-ins always exist; a registered preference id resolves or has
     // been reset by its disposer, so the lookup cannot miss.
     const active = this.themes.find(t => t.id === resolvedId)
@@ -388,6 +416,42 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), 'ui-theme: settings row dictionaries')
 
+  // deepseek-harness-skin: one write path for the skin DOM attributes. The
+  // Host settings subscription is the only writer; setSkin persists through
+  // the scope and this subscription applies the DOM change, so every open
+  // tab and the next boot land on the same skin.
+  //
+  // Two attributes, always written together: `data-dsh-skin` selects that
+  // skin's palette, `data-skin-chrome` selects the shared component skeleton
+  // it wears. The scheme is not written here — it rides the theme snapshot
+  // into ui-layout's presenter, which owns `data-ds-dark-theme`.
+  const applySkin = (skin: SkinId, custom: CustomSkin): void => {
+    if (typeof document === 'undefined') return
+    // The custom skin's rules are derived, not bundled, so they have to exist
+    // in the document before the attribute that selects them means anything.
+    applyCustomSkinStyle(custom)
+    const chrome = skinChrome(skin, custom)
+    if (chrome === null) {
+      document.body.removeAttribute('data-dsh-skin')
+      document.body.removeAttribute('data-skin-chrome')
+      return
+    }
+    document.body.setAttribute('data-dsh-skin', skin)
+    document.body.setAttribute('data-skin-chrome', chrome)
+  }
+  let lastSkin: SkinId = host.getSnapshot().value?.skin ?? DEFAULT_SKIN
+  let lastCustom: CustomSkin = host.getSnapshot().value?.customSkin ?? EMPTY_CUSTOM_SKIN
+  applySkin(lastSkin, lastCustom)
+  ctx.effect(() => host.subscribe(() => {
+    const skin = host.getSnapshot().value?.skin ?? DEFAULT_SKIN
+    const custom = host.getSnapshot().value?.customSkin ?? EMPTY_CUSTOM_SKIN
+    if (skin === lastSkin && sameCustomSkin(custom, lastCustom)) return
+    lastSkin = skin
+    lastCustom = custom
+    applySkin(skin, custom)
+    bound?.syncSkin(skin, custom.image !== '')
+  }), 'ui-theme: skin settings adoption')
+
   const store = createAppearanceRowStore()
   let bound: BoundActions<typeof store> | undefined
   const sync = (snapshot: ThemeSnapshot): void => {
@@ -397,10 +461,23 @@ export function apply(ctx: ClientContext): void {
   const injected = (actions: BoundActions<typeof store>): AppearanceRowInjected => {
     bound = actions
     // Re-sync from the getter so no event is lost between registration and
-    // first render (the store's revision guard drops stale duplicates).
+    // first render (the store's revision guard drops stale duplicates). The
+    // skin needs the same treatment: its subscription only fires on change, so
+    // without this the picker would highlight the store's initial guess until
+    // the user happened to switch something.
     sync(theme.getTheme())
+    actions.syncSkin(lastSkin, lastCustom.image !== '')
     return {
       setTheme: (id) => { theme.setTheme(id) },
+      setSkin: (skin) => { void host.set(SKIN_FIELD, skin) },
+      // Persisting the derived skin is what activates it: the settings
+      // subscription above is the only writer of the DOM, so the picker never
+      // paints a skin that a reload would not bring back.
+      setCustomImage: async (file) => {
+        const built = await buildCustomSkin(file)
+        await host.set(CUSTOM_SKIN_FIELD, built.custom)
+        await host.set(SKIN_FIELD, CUSTOM_SKIN)
+      },
     }
   }
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({

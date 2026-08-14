@@ -87,13 +87,17 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
 
   switch (message.stopReason) {
     case 'stop':
-      // A terminal stop that produced no content blocks is a degenerate
-      // provider completion, not a successful (empty) assistant message.
-      if (message.content.length === 0) {
+      // Reasoning is private metadata, not visible assistant output. A
+      // reasoning-only stop is what Kimi K3 can return when the gateway ends
+      // before emitting its visible answer, and must not be persisted as a
+      // successful empty turn. Tool calls are a valid non-text completion.
+      const hasVisibleText = message.content.some(block => block.type === 'text' && block.text.length > 0)
+      const hasToolCall = message.content.some(block => block.type === 'toolCall')
+      if (!hasVisibleText && !hasToolCall) {
         return {
           kind: 'error',
           failure: {
-            message: `model "${message.model}" returned a completed response with no content`,
+            message: `model "${message.model}" returned a completed response with no visible content`,
             code: EMPTY_RESPONSE_CODE,
           },
         }
