@@ -24,6 +24,7 @@ test('Windows packaging keeps only the required Electron locales and cleans its 
   assert.match(installerInclude, /!ifndef BUILD_UNINSTALLER/)
   assert.match(installerInclude, /FIND_PROCESS/)
   assert.match(installerInclude, /Sleep 250/)
+  assert.match(installerInclude, /KILL_PROCESS.*1/)
   assert.match(installerInclude, /_CHECK_APP_RUNNING/)
   assert.match(desktopPackage.scripts['package:win'], /electron-builder --win nsis && node scripts\/cleanup-package-output\.mjs --apply --include-runtime/)
 })

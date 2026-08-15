@@ -21,6 +21,8 @@ const READY_REQUEST_TIMEOUT_MS = 1_000
 const READY_RETRY_INITIAL_MS = 20
 const READY_RETRY_MAX_MS = 200
 const SHUTDOWN_TIMEOUT_MS = 5_000
+const SHUTDOWN_COMMAND_TIMEOUT_MS = 2_000
+const SHUTDOWN_POLL_MS = 100
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspaceRoot = resolve(desktopRoot, '../..')
@@ -33,6 +35,7 @@ let stopping: Promise<void> | undefined
 let tray: Tray | null = null
 let quitting = false
 let allowQuit = false
+let quitCleanup: Promise<void> | undefined
 const startupStartedAt = process.hrtime.bigint()
 const startupLogEnabled = process.env.DSH_STARTUP_LOG === '1' || !app.isPackaged
 
@@ -78,6 +81,64 @@ function diagnostic(logPath: string): string {
     return detail.length === 0 ? '' : `: ${detail.slice(-3000)}`
   } catch {
     return ''
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolveDelay => setTimeout(resolveDelay, ms))
+}
+
+function runCommand(command: string, args: readonly string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
+  return new Promise((resolveCommand) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    let stdout = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(null)
+    }, timeoutMs)
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk })
+    const finish = (code: number | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveCommand({ code, stdout })
+    }
+    child.once('error', () => finish(null))
+    child.once('exit', code => finish(code))
+  })
+}
+
+async function processExists(pid: number): Promise<boolean> {
+  const result = await runCommand('tasklist', ['/FI', `PID eq ${String(pid)}`, '/FO', 'CSV', '/NH'], SHUTDOWN_COMMAND_TIMEOUT_MS)
+  return result.code === 0 && result.stdout.includes(`"${String(pid)}"`)
+}
+
+async function stopWindowsDescendants(rootPid: number): Promise<void> {
+  const script = [
+    `$root = ${String(rootPid)}`,
+    '$all = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId)',
+    '$ids = New-Object "System.Collections.Generic.HashSet[int]"',
+    '[void]$ids.Add($root)',
+    'do { $changed = $false; foreach ($item in $all) { if ($ids.Contains([int]$item.ParentProcessId) -and $ids.Add([int]$item.ProcessId)) { $changed = $true } } } while ($changed)',
+    '$ids | Where-Object { $_ -ne $root } | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }',
+  ].join(';')
+  await runCommand('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script,
+  ], SHUTDOWN_COMMAND_TIMEOUT_MS)
+}
+
+async function stopWindowsProcessTree(rootPid: number): Promise<void> {
+  const taskkill = async (): Promise<void> => {
+    await runCommand('taskkill', ['/PID', String(rootPid), '/T', '/F'], SHUTDOWN_COMMAND_TIMEOUT_MS)
+  }
+  await taskkill()
+  await stopWindowsDescendants(rootPid)
+  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS
+  while (Date.now() < deadline && await processExists(rootPid)) {
+    await taskkill()
+    await delay(SHUTDOWN_POLL_MS)
   }
 }
 
@@ -131,6 +192,7 @@ function waitForReady(child: ChildProcess, url: string, logPath: string): Promis
 
 /** Start the existing Web profile and return its loopback URL. */
 async function startDsh(): Promise<{ url: string; ready: Promise<string> }> {
+  if (quitting) throw new Error('应用正在退出')
   const entry = cliEntry()
   if (!existsSync(entry)) {
     throw new Error(`找不到 dsh runtime：${entry}\n请先执行 pnpm run build。`)
@@ -142,6 +204,7 @@ async function startDsh(): Promise<{ url: string; ready: Promise<string> }> {
     mkdir(dshHome, { recursive: true }),
   ])
   const url = `http://127.0.0.1:${String(port)}`
+  if (quitting) throw new Error('应用正在退出')
   const logPath = join(dshHome, 'dsh-web.log')
   const logFd = openSync(logPath, 'w')
   dshLogFd = logFd
@@ -173,6 +236,10 @@ async function startDsh(): Promise<{ url: string; ready: Promise<string> }> {
     dshLogFd = undefined
   })
   dshProcess = child
+  if (quitting) {
+    await stopDsh()
+    throw new Error('应用正在退出')
+  }
   return { url, ready: waitForReady(child, url, logPath) }
 }
 
@@ -181,7 +248,8 @@ async function stopDsh(): Promise<void> {
   if (stopping !== undefined) return stopping
   const child = dshProcess
   dshProcess = undefined
-  if (child === undefined || child.exitCode !== null) return
+  if (child === undefined) return
+  const rootPid = child.pid
 
   stopping = (async () => {
     const exited = new Promise<void>((resolveExited) => {
@@ -192,27 +260,18 @@ async function stopDsh(): Promise<void> {
       child.once('exit', () => resolveExited())
     })
 
-    if (process.platform === 'win32' && child.pid !== undefined) {
-      await new Promise<void>((resolveKilled) => {
-        const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
-          stdio: 'ignore',
-          windowsHide: true,
-        })
-        killer.once('error', () => {
-          child.kill()
-          resolveKilled()
-        })
-        killer.once('exit', () => resolveKilled())
-      })
+    if (process.platform === 'win32' && rootPid !== undefined) {
+      await stopWindowsProcessTree(rootPid)
     } else {
-      child.kill()
+      if (child.exitCode === null) child.kill()
     }
 
     await Promise.race([
       exited,
-      new Promise<void>(resolveTimeout => setTimeout(resolveTimeout, SHUTDOWN_TIMEOUT_MS)),
+      delay(SHUTDOWN_TIMEOUT_MS),
     ])
     if (child.exitCode === null) child.kill()
+    if (process.platform === 'win32' && rootPid !== undefined) await stopWindowsDescendants(rootPid)
   })().finally(() => { stopping = undefined })
   await stopping
 }
@@ -306,8 +365,13 @@ function loadWindow(window: BrowserWindow, localUrl: string): void {
 
 /** Boot the local server and then reveal the desktop window. */
 async function boot(): Promise<void> {
+  if (quitting) return
   startupLog('Electron app ready')
   const dsh = await startDsh()
+  if (quitting) {
+    await stopDsh()
+    return
+  }
   webUrl = dsh.url
   const window = createWindow(dsh.url)
   startupLog('BrowserWindow created while dsh web is warming up')
@@ -344,11 +408,13 @@ if (!app.requestSingleInstanceLock()) {
     }
     event.preventDefault()
     quitting = true
-    void stopDsh().finally(() => {
-      allowQuit = true
-      destroyTray()
-      app.quit()
-    })
+    if (quitCleanup === undefined) {
+      quitCleanup = stopDsh().finally(() => {
+        allowQuit = true
+        destroyTray()
+        app.quit()
+      })
+    }
   })
 
   app.on('window-all-closed', () => {

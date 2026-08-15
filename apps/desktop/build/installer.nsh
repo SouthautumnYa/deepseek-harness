@@ -15,10 +15,12 @@ Var pid
       ${Do}
         !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
         ${If} $R0 != 0
-          ${ExitDo}
+      ${ExitDo}
         ${EndIf}
         IntOp $R1 $R1 + 1
         ${If} $R1 >= 60
+          DetailPrint "The application did not exit in time; forcing its known process tree to stop..."
+          !insertmacro KILL_PROCESS "${APP_EXECUTABLE_FILENAME}" 1
           ${ExitDo}
         ${EndIf}
         Sleep 250

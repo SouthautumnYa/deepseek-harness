@@ -70,5 +70,5 @@ minimumReleaseAgeExclude:
   - node-addon-require-builtin@0.1.4
 
 patchedDependencies:
-  dsh-plugin-marketplace@1.3.2: patches/dsh-plugin-marketplace@1.3.2.patch
+  dsh-plugin-marketplace@1.3.13: patches/dsh-plugin-marketplace@1.3.13.patch
   node-pty@1.1.0: patches/node-pty@1.1.0.patch
