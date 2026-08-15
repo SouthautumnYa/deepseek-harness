@@ -16,8 +16,13 @@ const desktopRoot = resolve(import.meta.dirname, '..')
 
 test('Windows packaging keeps only the required Electron locales and cleans its intermediate output', () => {
   const desktopPackage = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8'))
+  const installerInclude = readFileSync(join(desktopRoot, 'build', 'installer.nsh'), 'utf8')
 
   assert.deepEqual(desktopPackage.build.electronLanguages, ['zh-CN', 'en-US'])
+  assert.equal(desktopPackage.build.nsis.include, 'build/installer.nsh')
+  assert.match(installerInclude, /--quit-for-update/)
+  assert.match(installerInclude, /taskkill \/F \/T/)
+  assert.match(installerInclude, /_CHECK_APP_RUNNING/)
   assert.match(desktopPackage.scripts['package:win'], /electron-builder --win nsis && node scripts\/cleanup-package-output\.mjs --apply --include-runtime/)
 })
 

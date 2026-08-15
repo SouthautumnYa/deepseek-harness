@@ -14,6 +14,7 @@ import {
 } from 'electron'
 import { buildEditContextMenuTemplate } from './context-menu.js'
 import { installDetachedWriteGuard } from './process-errors.js'
+import { requestsQuitForUpdate } from './update-exit.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const READY_REQUEST_TIMEOUT_MS = 1_000
@@ -317,10 +318,22 @@ async function boot(): Promise<void> {
 
 app.setAppUserModelId('ai.deepseek.harness')
 
+const quitForUpdateRequested = requestsQuitForUpdate(process.argv)
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
+} else if (quitForUpdateRequested) {
+  // The installer starts a short-lived second instance with this flag. If no
+  // primary instance exists, do not accidentally launch the full application.
+  quitting = true
+  app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine) => {
+    if (requestsQuitForUpdate(commandLine)) {
+      quitting = true
+      app.quit()
+      return
+    }
     showMainWindow()
   })
 
