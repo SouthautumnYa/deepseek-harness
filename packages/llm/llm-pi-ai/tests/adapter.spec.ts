@@ -110,6 +110,35 @@ describe('PiAiAdapter provider routing', () => {
     })
   })
 
+  it('disables profile reasoning for session-title requests without changing normal turns', async () => {
+    const server = await mockServer([{ events: textEvents }, { events: textEvents }])
+    const ctx = await harness(server.url, { reasoning: 'max' })
+
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      purpose: 'session-title',
+      maxTokens: 64,
+      messages: [],
+    })
+    expect(server.requests[0]).toMatchObject({
+      model: 'deepseek-v4-flash',
+      max_completion_tokens: 64,
+      thinking: { type: 'disabled' },
+    })
+    expect(server.requests[0]).not.toHaveProperty('reasoning_effort')
+
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      maxTokens: 64,
+      messages: [],
+    })
+    expect(server.requests[1]).toMatchObject({
+      max_completion_tokens: 64,
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'max',
+    })
+  })
+
   it('uses a dynamic request effort and reports unsupported efforts before network I/O', async () => {
     const server = await mockServer([{ events: textEvents }, { events: textEvents }])
     const ctx = await harness(server.url, { reasoning: 'max' })
