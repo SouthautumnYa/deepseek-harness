@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-root",
-  "version": "0.1.0-rc.6",
+  "version": "0.1.0-rc.7",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -19,7 +19,7 @@
   "scripts": {
     "build": "npm run build:lib && npm run build:web",
     "build:lib": "npm run build:lib:host && npm run build:lib:client",
-    "build:lib:host": "tsc -b tsconfig.host.json && tsdown --env.DSH_BUILD_FACE host",
+    "build:lib:host": "npm run sync:routing-suite && tsc -b tsconfig.host.json && tsdown --env.DSH_BUILD_FACE host",
     "build:lib:client": "tsc -b tsconfig.client.json && tsdown --env.DSH_BUILD_FACE client",
     "build:web": "pnpm --filter @deepseek-ai/dsh-web-frontend run build",
     "clean": "tsx scripts/clean.ts",
@@ -127,6 +127,7 @@
     "doc-sync": "tsx scripts/run-gates.ts doc-sync",
     "hygiene": "pnpm run rescope-vendor:check && pnpm run knip && pnpm run publint && pnpm run constraints && pnpm run verify-dsh-package-licenses && pnpm run verify-package-invariants && pnpm run verify-built-package-invariants && pnpm run verify-cordis-config && pnpm run verify-node-next-types && pnpm run verify-runtime-closure && pnpm run verify-vendored-links",
     "publish:npm-baseline": "tsx scripts/publish-npm-baseline.ts",
+    "sync:routing-suite": "node scripts/sync-routing-suite-preset.mjs",
     "release:dsh": "tsx scripts/release/bump.ts --family dsh",
     "release:vendor": "tsx scripts/release/bump.ts --family vendor",
     "release:verify": "tsx scripts/release/verify.ts",

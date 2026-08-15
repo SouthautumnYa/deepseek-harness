@@ -20,12 +20,15 @@ test('Windows packaging keeps only the required Electron locales and cleans its 
 
   assert.deepEqual(desktopPackage.build.electronLanguages, ['zh-CN', 'en-US'])
   assert.equal(desktopPackage.build.nsis.include, 'build/installer.nsh')
-  assert.match(installerInclude, /--quit-for-update/)
   assert.match(installerInclude, /!ifndef BUILD_UNINSTALLER/)
   assert.match(installerInclude, /FIND_PROCESS/)
   assert.match(installerInclude, /Sleep 250/)
   assert.match(installerInclude, /KILL_PROCESS.*1/)
-  assert.match(installerInclude, /_CHECK_APP_RUNNING/)
+  assert.match(installerInclude, /Force-closing/)
+  assert.match(installerInclude, /customUnInstallCheck/)
+  assert.match(installerInclude, /RMDir \/r \"\$INSTDIR\"/)
+  assert.doesNotMatch(installerInclude, /ExecWait/)
+  assert.doesNotMatch(installerInclude, /!insertmacro _CHECK_APP_RUNNING/)
   assert.match(desktopPackage.scripts['package:win'], /electron-builder --win nsis && node scripts\/cleanup-package-output\.mjs --apply --include-runtime/)
 })
 

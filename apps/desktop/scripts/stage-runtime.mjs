@@ -29,6 +29,11 @@ const REQUIRED_RUNTIME_PACKAGES = [
   '@deepseek-ai/dsh-command-compact',
 ]
 
+execFileSync(process.execPath, [resolve(workspaceRoot, 'scripts', 'sync-routing-suite-preset.mjs')], {
+  cwd: workspaceRoot,
+  stdio: 'inherit',
+})
+
 async function pruneRuntime(root) {
   let removedFiles = 0
   let removedBytes = 0

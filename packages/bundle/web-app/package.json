@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-web-app",
   "description": "The dsh browser-surface bundle: the web patch layer over dsh-base plus the runtime glue plugin (frontend dist serving, web-surface prompt, bash runtime variables, URL line)",
-  "version": "0.1.0-rc.6",
+  "version": "0.1.0-rc.7",
   "publishConfig": {
     "access": "public"
   },
@@ -105,6 +105,7 @@
     "dsh-plugin-marketplace": "git+https://github.com/bradeGithub/DSH-Plugins-Marketplace.git#d73d0d74bbb60cf18305b597b62f90292b69595b",
     "@dsh-extra/im-channel": "git+https://github.com/ivorytower1026/dsh-im-bot.git#36045cea0230869c2b7462cf08a59530a2a1c02e&path:/im-channel",
     "@dsh-extra/dsh-client-ui-settings-im": "git+https://github.com/ivorytower1026/dsh-im-bot.git#36045cea0230869c2b7462cf08a59530a2a1c02e&path:/ui-settings-im",
+    "@dsh-external/dsh-super-injector": "https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz",
     "dsh-model-modes": "git+https://github.com/DTSFO/dsh-model-modes.git#cad4a7987a3098964cbe8c53e2c268528d7b2f02",
     "commander": "^15.0.0"
   },

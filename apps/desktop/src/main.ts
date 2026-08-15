@@ -142,6 +142,20 @@ async function stopWindowsProcessTree(rootPid: number): Promise<void> {
   }
 }
 
+/** Stop every packaged Electron child that shares this installation's exe. */
+async function stopWindowsProcessesByExecutable(executablePath: string, excludedPid: number): Promise<void> {
+  const escapedPath = executablePath.replace(/'/g, "''")
+  const script = [
+    `$target = '${escapedPath}'`,
+    `$excluded = ${String(excludedPid)}`,
+    '$all = @(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath)',
+    '$all | Where-Object { [int]$_.ProcessId -ne $excluded -and $_.ExecutablePath -and $_.ExecutablePath -ieq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+  ].join(';')
+  await runCommand('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script,
+  ], SHUTDOWN_COMMAND_TIMEOUT_MS)
+}
+
 function waitForReady(child: ChildProcess, url: string, logPath: string): Promise<string> {
   return new Promise((resolveReady, rejectReady) => {
     const state = { settled: false }
@@ -276,6 +290,19 @@ async function stopDsh(): Promise<void> {
   await stopping
 }
 
+/** Request a quit and keep a bounded hard-exit fallback for installer handshakes. */
+function requestApplicationQuit(): void {
+  quitting = true
+  app.quit()
+  const fallback = setTimeout(() => {
+    if (allowQuit) return
+    allowQuit = true
+    destroyTray()
+    app.exit(0)
+  }, SHUTDOWN_TIMEOUT_MS + SHUTDOWN_COMMAND_TIMEOUT_MS + 2_000)
+  fallback.unref()
+}
+
 function showMainWindow(): void {
   if (mainWindow === null || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -387,15 +414,18 @@ const quitForUpdateRequested = requestsQuitForUpdate(process.argv)
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else if (quitForUpdateRequested) {
-  // The installer starts a short-lived second instance with this flag. If no
-  // primary instance exists, do not accidentally launch the full application.
+  // An elevated installer can create a second Windows process with a
+  // separate Electron single-instance lock. In that case there is no
+  // second-instance event to receive, so clean same-install processes here.
   quitting = true
-  app.quit()
+  if (process.platform === 'win32' && app.isPackaged) {
+    void stopWindowsProcessesByExecutable(process.execPath, process.pid)
+      .finally(() => { app.exit(0) })
+  } else app.quit()
 } else {
   app.on('second-instance', (_event, commandLine) => {
     if (requestsQuitForUpdate(commandLine)) {
-      quitting = true
-      app.quit()
+      requestApplicationQuit()
       return
     }
     showMainWindow()
@@ -409,10 +439,13 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     quitting = true
     if (quitCleanup === undefined) {
-      quitCleanup = stopDsh().finally(() => {
+      quitCleanup = stopDsh().catch(() => {}).then(async () => {
+        if (process.platform === 'win32' && app.isPackaged) {
+          await stopWindowsProcessesByExecutable(process.execPath, process.pid).catch(() => {})
+        }
         allowQuit = true
         destroyTray()
-        app.quit()
+        app.exit(0)
       })
     }
   })

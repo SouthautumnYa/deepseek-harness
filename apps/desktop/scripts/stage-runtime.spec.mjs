@@ -16,6 +16,7 @@ function packagePath(packageName) {
 test('staged Windows runtime uses the production closure and copies client assets', () => {
   const stageScript = readFileSync(join(desktopRoot, 'scripts', 'stage-runtime.mjs'), 'utf8')
   assert.match(stageScript, /deploy[\s\S]*--filter[\s\S]*@deepseek-ai\/dsh[\s\S]*--prod/)
+  assert.match(stageScript, /sync-routing-suite-preset\.mjs/)
 
   const nodeModulesResource = desktopPackage.build.extraResources.find(
     resource => resource.from === 'runtime/node_modules',
@@ -39,6 +40,11 @@ test('staged Windows runtime uses the production closure and copies client asset
   const marketplaceRoot = packagePath(marketplacePackage)
   assert.ok(existsSync(join(marketplaceRoot, 'package.json')))
   assert.ok(existsSync(join(marketplaceRoot, 'lib', 'client.js')))
+
+  const injectorPackage = '@dsh-external/dsh-super-injector'
+  const injectorRoot = packagePath(injectorPackage)
+  assert.ok(existsSync(join(injectorRoot, 'package.json')))
+  assert.ok(existsSync(join(injectorRoot, 'lib', 'index.js')))
 
   const packagedRuntime = join(desktopRoot, 'release', 'win-unpacked', 'resources', 'runtime')
   if (existsSync(packagedRuntime)) {

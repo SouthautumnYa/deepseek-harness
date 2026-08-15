@@ -1499,6 +1499,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
+      '@dsh-external/dsh-super-injector':
+        specifier: https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz
+        version: https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz(@deepseek-ai/dsh-tools@packages+core+tools)
       '@dsh-extra/dsh-client-ui-settings-im':
         specifier: git+https://github.com/ivorytower1026/dsh-im-bot.git#36045cea0230869c2b7462cf08a59530a2a1c02e&path:/ui-settings-im
         version: https://codeload.github.com/ivorytower1026/dsh-im-bot/tar.gz/36045cea0230869c2b7462cf08a59530a2a1c02e#path:/ui-settings-im(@deepseek-ai/dsh-client-runtime@packages+client+runtime)(@deepseek-ai/dsh-client-ui-settings@packages+client+ui-settings)(@deepseek-ai/dsh-client-ui-slots@packages+client+ui-slots)(react@18.3.1)
@@ -9354,6 +9357,14 @@ packages:
       '@deepseek-ai/dsh-settings': '>=0.1.0'
       '@deepseek-ai/schemastery': '>=0.1.0'
 
+  '@dsh-external/dsh-super-injector@https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz':
+    resolution: {integrity: sha512-Om6X8V3weqtwGIF4h/X6WArclN6yfh8WPQRqgSTIMtq+Bh1r1raPxl/X8q8wADK/U/Yl1O7pbp+nATRG9cBVKg==, tarball: https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz}
+    version: 0.3.3
+    peerDependencies:
+      '@deepseek-ai/dsh-tools': '>=0.0.1-rc <2'
+      cordis: '>=4.0.0-rc <5'
+      schemastery: ^3.18.0
+
   '@earendil-works/pi-ai@0.82.1':
     resolution: {integrity: sha512-3WFYRhEp3lQB3444EhPMBcM7zSaEUE3eJgHOR7s4081NLqbw/FsWilIKWXSua0Gv3sRr7m9xMidR3pPDE7jI/A==}
     engines: {node: '>=22.19.0'}
@@ -15820,6 +15831,10 @@ snapshots:
       - debug
       - supports-color
       - utf-8-validate
+
+  '@dsh-external/dsh-super-injector@https://github.com/yjh051108/dsh-super-injector/releases/download/v0.3.3/dsh-external-dsh-super-injector-0.3.3.tgz(@deepseek-ai/dsh-tools@packages+core+tools)':
+    dependencies:
+      '@deepseek-ai/dsh-tools': link:packages/core/tools
 
   '@earendil-works/pi-ai@0.82.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)':
     dependencies:

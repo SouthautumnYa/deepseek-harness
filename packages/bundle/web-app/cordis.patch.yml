@@ -282,6 +282,13 @@
     - id: dsh-model-modes
       name: 'dsh-model-modes'
 
+    # Optional routing-suite injector. The package is a pinned GitHub Release
+    # tarball so the desktop runtime carries the built artifact without
+    # cloning the suite's source/submodules.
+    - id: dsh-super-injector
+      name: '@dsh-external/dsh-super-injector'
+      config: {}
+
     # Community marketplace: GitHub-backed DSH plugins and general Skills.
     # The package is pinned in this bundle's manifest so the desktop runtime
     # carries the same marketplace version in development and packaged builds.

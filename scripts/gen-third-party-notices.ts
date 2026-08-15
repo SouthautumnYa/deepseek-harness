@@ -78,6 +78,7 @@ const OVERRIDES: Record<string, { license?: string; repo?: string }> = {
   // Git subdirectory packages from dsh-im-bot inherit the repository from their source tree.
   '@dsh-extra/im-channel': { license: 'MIT', repo: 'https://github.com/ivorytower1026/dsh-im-bot' },
   '@dsh-extra/dsh-client-ui-settings-im': { license: 'MIT', repo: 'https://github.com/ivorytower1026/dsh-im-bot' },
+  '@dsh-external/dsh-super-injector': { license: 'BSD-3-Clause', repo: 'https://github.com/yjh051108/dsh-super-injector' },
 }
 
 /**

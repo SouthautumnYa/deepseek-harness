@@ -35,6 +35,7 @@ External packages that a workspace package resolves at runtime. The tier covers 
 | [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript) | SEE LICENSE IN README.md |
 | [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript) | MIT |
 | [`@babel/code-frame`](https://github.com/babel/babel) | MIT |
+| [`@dsh-external/dsh-super-injector`](https://github.com/yjh051108/dsh-super-injector) | BSD-3-Clause |
 | [`@dsh-extra/dsh-client-ui-settings-im`](https://github.com/ivorytower1026/dsh-im-bot) | MIT |
 | [`@dsh-extra/im-channel`](https://github.com/ivorytower1026/dsh-im-bot) | MIT |
 | [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi) | MIT |
