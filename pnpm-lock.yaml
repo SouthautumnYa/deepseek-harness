@@ -9,7 +9,7 @@ overrides:
   '@deepseek-ai/schemastery': link:vendor/schemastery
 
 patchedDependencies:
-  dsh-plugin-marketplace@1.3.2: a8a6aafc4625214f07e11848ee1839a85c5cf91f883d1f9fad7ef864c636505d
+  dsh-plugin-marketplace@1.3.2: a5eca21d0a62566b20805dbefa59326da4c36449c97200b878d4436932421467
   node-pty@1.1.0: 7a0c04f1f49d798a9ffe2f7f414c01064a44ca2489772d0c3e1235ab336755e6
 
 importers:
@@ -1504,7 +1504,7 @@ importers:
         version: 15.0.0
       dsh-plugin-marketplace:
         specifier: git+https://github.com/bradeGithub/DSH-Plugins-Marketplace.git#6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a
-        version: https://codeload.github.com/bradeGithub/DSH-Plugins-Marketplace/tar.gz/6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a(patch_hash=a8a6aafc4625214f07e11848ee1839a85c5cf91f883d1f9fad7ef864c636505d)
+        version: https://codeload.github.com/bradeGithub/DSH-Plugins-Marketplace/tar.gz/6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a(patch_hash=a5eca21d0a62566b20805dbefa59326da4c36449c97200b878d4436932421467)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -18344,7 +18344,7 @@ snapshots:
 
   dotenv@16.6.1: {}
 
-  dsh-plugin-marketplace@https://codeload.github.com/bradeGithub/DSH-Plugins-Marketplace/tar.gz/6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a(patch_hash=a8a6aafc4625214f07e11848ee1839a85c5cf91f883d1f9fad7ef864c636505d): {}
+  dsh-plugin-marketplace@https://codeload.github.com/bradeGithub/DSH-Plugins-Marketplace/tar.gz/6d6fd7e0f2eab242b061afc7a38ddbe54f35a28a(patch_hash=a5eca21d0a62566b20805dbefa59326da4c36449c97200b878d4436932421467): {}
 
   dts-resolver@3.0.0(oxc-resolver@11.20.0):
     optionalDependencies:

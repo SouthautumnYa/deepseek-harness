@@ -577,6 +577,30 @@ describe('toStreamChunks', () => {
     ])
   })
 
+  it('replays terminal-only text and reasoning blocks before completion', async () => {
+    const done = assistant({
+      api: 'anthropic-messages',
+      content: [
+        { type: 'thinking', thinking: 'private thought' },
+        { type: 'text', text: 'visible answer' },
+      ],
+      usage: usage(3, 4),
+    })
+    const chunks = await collect(toStreamChunks(feed(
+      { type: 'start', partial: assistant({ api: 'anthropic-messages' }) },
+      { type: 'done', reason: 'stop', message: done },
+    )))
+
+    expect(chunks.slice(0, 6)).toEqual([
+      { type: 'block-start', index: 0, blockType: 'reasoning' },
+      { type: 'reasoning-delta', index: 0, text: 'private thought' },
+      { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'private thought' } },
+      { type: 'block-start', index: 1, blockType: 'text' },
+      { type: 'text-delta', index: 1, text: 'visible answer' },
+      { type: 'block-end', index: 1, block: { type: 'text', text: 'visible answer' } },
+    ])
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+  })
   it('maps thinking events to reasoning blocks', async () => {
     const chunks = await collect(toStreamChunks(feed(
       { type: 'thinking_start', contentIndex: 0, partial: assistant() },

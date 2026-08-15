@@ -52,6 +52,62 @@ index 1f3753c317d0f81a747510193f15ad76f3e52d66..96efc2064e4af4235f7e709bfd22bc93
      "step2": "[2/5] Install type: {type}",
      "type.skill": "skill",
      "type.agent-preset": "agent preset",
+@@ -764,26 +764,53 @@ function registrySources(kind) {
+ /** jsDelivr CDN 缓存可滞后数小时：超过该年龄的索引视为过期，改用下一数据源。 */
+ const REGISTRY_MAX_AGE_MS = 6 * 3600 * 1000;
+ 
++/** 归一化 marketplace 元数据中的数组/逗号分隔字符串/标签对象。 */
++const MARKETPLACE_CATEGORY_KEYS = new Set(["vision", "document", "memory", "model", "notify", "coding", "conversation", "web-ui", "agent", "tool", "resource", "other"]);
++function normalizeMarketplaceList(value) {
++  if (Array.isArray(value)) return value.flatMap(normalizeMarketplaceList);
++  if (typeof value === "string") {
++    const text = value.trim();
++    if (!text) return [];
++    if (text.startsWith("[") && text.endsWith("]")) {
++      try { return normalizeMarketplaceList(JSON.parse(text)); } catch { /* 按普通字符串继续 */ }
++    }
++    return text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
++  }
++  if (value && typeof value === "object") {
++    return normalizeMarketplaceList(value.slug ?? value.name ?? value.label ?? value.value);
++  }
++  return [];
++}
++function normalizeMarketplaceCategory(value) {
++  const category = normalizeMarketplaceList(value)
++    .map((item) => item.toLowerCase().replace(/[\s_]+/g, "-"))
++    .find((item) => MARKETPLACE_CATEGORY_KEYS.has(item));
++  return category ?? "other";
++}
+ /** 归一化仓库元数据（兼容搜索 API 与 registry.json 两种字段形态）；html_url 只放行 https://github.com 链接。 */
+ function normalizeRepo(r) {
+   let htmlUrl = null;
+   try {
+     const u = new URL(String(r.html_url ?? ""));
+     if (u.protocol === "https:" && u.host === "github.com") htmlUrl = u.href;
+   } catch { /* 非法 URL 置空，客户端不渲染链接 */ }
+-  return {
++  const normalizedTopics = normalizeMarketplaceList(r.topics);
++  const topics = normalizedTopics.length > 0 ? normalizedTopics : normalizeMarketplaceList(r.tags);
++  const rawCategory = r.category || r.categories || topics;
++  return {
+     full_name: r.full_name,
+     name: r.name,
+     description: r.description,
+     html_url: htmlUrl,
+     stargazers_count: r.stargazers_count,
+     updated_at: r.updated_at,
+     default_branch: r.default_branch ?? "main",
+-    topics: r.topics ?? [],
++    topics,
++    category: normalizeMarketplaceCategory(rawCategory),
+     license: typeof r.license === "string" ? r.license : (r.license?.spdx_id ?? null),
+     pkg_name: typeof r.pkg_name === "string" && r.pkg_name.length > 0 ? r.pkg_name : null,
+     // skills 索引字段（skills.json 才有；registry.json / 搜索 API 没有则置 null 未知）
+     has_skill: r.has_skill === true ? true : (r.has_skill === false ? false : null),
+     has_install_script: r.has_install_script === true ? true : (r.has_install_script === false ? false : null)
+   };
+ }
 @@ -938,6 +956,158 @@ async function runPnpm(args, opts) {
    return await execFileAsync(process.platform === "win32" ? "pnpm.cmd" : "pnpm", args, opts);
  }
@@ -222,3 +278,117 @@ index 1f3753c317d0f81a747510193f15ad76f3e52d66..96efc2064e4af4235f7e709bfd22bc93
  
            const type = await detectType(cacheDir);
            logLine(t(langFull, "step2", { type: t(langFull, `type.${type}`) }));
+diff --git a/lib/client.js b/lib/client.js
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -227,1 +227,64 @@ function RepoCard(props) {
++    function normalizeMarketplaceList(value) {
++      if (Array.isArray(value)) return value.flatMap(normalizeMarketplaceList);
++      if (typeof value === "string") {
++        var text = value.trim();
++        if (!text) return [];
++        if (text.startsWith("[") && text.endsWith("]")) {
++          try { return normalizeMarketplaceList(JSON.parse(text)); } catch (e) { /* 按普通字符串继续 */ }
++        }
++        return text.split(/[,\n]/).map(function (item) { return item.trim(); }).filter(Boolean);
++      }
++      if (value && typeof value === "object") {
++        return normalizeMarketplaceList(value.slug || value.name || value.label || value.value);
++      }
++      return [];
++    }
++    var CATEGORY_ALIASES = {
++      vision: "vision", visual: "vision", multimodal: "vision", "visual-multimodal": "vision", "视觉多模态": "vision",
++      document: "document", memory: "memory", model: "model", notify: "notify", coding: "coding",
++      conversation: "conversation", "web-ui": "web-ui", agent: "agent", tool: "tool", resource: "resource", other: "other"
++    };
++    function normalizeMarketplaceCategory(value) {
++      var category = normalizeMarketplaceList(value).map(function (item) {
++        return item.toLowerCase().replace(/[\s_]+/g, "-");
++      }).find(function (item) { return CATEGORY_ALIASES[item]; });
++      return category ? CATEGORY_ALIASES[category] : null;
++    }
++    function tagsForRepo(repo) {
++      var topics = normalizeMarketplaceList(repo && repo.topics);
++      return topics.length > 0 ? topics : normalizeMarketplaceList(repo && repo.tags);
++    }
++    function categoryValuesForRepo(repo) {
++      var raw = repo && repo.category;
++      var values = normalizeMarketplaceList(raw);
++      if (values.length === 0) values = normalizeMarketplaceList(repo && repo.categories);
++      if (values.length === 0) values = tagsForRepo(repo);
++      var normalized = values.map(normalizeMarketplaceCategory).filter(Boolean);
++      return normalized.length > 0 ? normalized : ["other"];
++    }
++    function categoryForRepo(repo) {
++      return categoryValuesForRepo(repo)[0];
++    }
++    function repoMatchesCategory(repo, category) {
++      return category === "all" || categoryValuesForRepo(repo).indexOf(category) !== -1;
++    }
++    function repoSearchText(repo) {
++      return [repo && repo.name, repo && repo.full_name, repo && repo.description]
++        .concat(tagsForRepo(repo)).filter(Boolean).join(" ").toLowerCase();
++    }
++    function filterMarketplaceRepos(repos, category, query) {
++      var q = String(query || "").trim().toLowerCase();
++      return (repos || []).filter(function (repo) {
++        return repoMatchesCategory(repo, category) && (!q || repoSearchText(repo).indexOf(q) !== -1);
++      });
++    }
++    function categoryLabelKey(category) {
++      return "cat" + String(category).split("-").map(function (part) {
++        return part.charAt(0).toUpperCase() + part.slice(1);
++      }).join("");
++    }
++    function formatNoMatchQuery(category, query) {
++      var text = String(query || "").trim();
++      return text || (category !== "all" ? t(categoryLabelKey(category)) : "");
++    }
+     function RepoCard(props) {
+@@ -228,7 +291,8 @@ function RepoCard(props) {
+       var repo = props.repo;
+       var busy = props.busy;        // 全局互斥：任何安装进行中 → 所有安装按钮禁用
+       var selfBusy = props.selfBusy; // 本卡片正在安装 → 显示「安装中...」
+       var installed = !!props.installed;
+       var updateAvailable = !!props.updateAvailable;
+       var done = installed && !updateAvailable;
++      var category = categoryForRepo(repo);
+       // skills 索引专属标识：含安装脚本（🛡）/ 探测未知（弱提示）
+@@ -239,14 +303,14 @@ function RepoCard(props) {
+       return h("div", { style: s.card },
+         h("div", { style: s.row },
+           h("div", { style: { flex: 1, minWidth: 0, marginRight: 12 } },
+             h("p", { style: s.name }, repo.name,
+               h("span", { style: s.badge }, repo.stargazers_count > 0 ? "★ " + repo.stargazers_count : t("badgeNew")),
+-              repo.category && repo.category !== "other" ? h("span", { style: s.badge }, t("cat" + String(repo.category).split("-").map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join(""))) : null,
++              category !== "other" ? h("span", { style: s.badge }, t("cat" + String(category).split("-").map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join(""))) : null,
+               shield ? h("span", { style: s.badgeShield }, t("badgeShield")) : null,
+               unverified ? h("span", { style: s.badge }, t("badgeUnverified")) : null),
+             h("p", { style: s.meta }, repo.full_name + " · " + t("updatedAt", { d: (repo.updated_at || "").slice(0, 10) }) + (repo.license ? " · " + repo.license : "") + " · ",
+               safeUrl ? h("a", { href: safeUrl, target: "_blank", rel: "noopener noreferrer", style: s.link }, t("githubLink")) : null,
+               updateAvailable ? h("span", { style: s.updateHint }, t("updateHint", { old: repo.installedVersion, new: repo.latestVersion })) : null),
+             repo.description ? h("p", { style: s.desc }, repo.description) : null,
+-            repo.topics && repo.topics.length > 0 ? h("p", { style: s.meta }, t("tags", { tags: repo.topics.slice(0, 6).join(", ") })) : null
++            (function () { var topics = tagsForRepo(repo); return topics.length > 0 ? h("p", { style: s.meta }, t("tags", { tags: topics.slice(0, 6).join(", ") })) : null; })()
+           ),
+@@ -401,16 +465,13 @@ function PluginTab(props) {
+         repos ? (function () {
+           var q = query.trim().toLowerCase();
+-          var list = repos.filter(function (r) {
+-            if (category !== "all" && (r.category || "other") !== category) return false;
+-            if (!q) return true;
+-            return (r.name + " " + r.full_name + " " + (r.topics || []).join(" ")).toLowerCase().indexOf(q) !== -1;
+-          });
++          var list = filterMarketplaceRepos(repos, category, query);
++          var emptyQuery = formatNoMatchQuery(category, query);
+           return [
+             h("p", { key: "count", style: Object.assign({}, s.meta, { margin: "0 0 8px" }) },
+               t("countTotal", { n: repos.length }) + ((q || category !== "all") ? t("countMatch", { n: list.length }) : "")),
+             list.map(function (repo) {
+               // 全局互斥：任何安装进行中 → 所有按钮禁用；只有正在安装的那个显示「安装中...」
+               return h(RepoCard, { key: repo.full_name, repo: repo, installed: repo.installed, updateAvailable: repo.updateAvailable, busy: !!(props.inst && props.inst.phase === "running"), selfBusy: !!(props.inst && props.inst.phase === "running" && props.inst.repo === repo.full_name), onInstall: function (fullName) { props.setInputValues({}); props.runInstall(fullName, {}, []); } });
+             }),
+-            list.length === 0 ? h("p", { key: "empty", style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, t("noMatch", { q: query })) : null
++            list.length === 0 && (q || category !== "all") ? h("p", { key: "empty", style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, t("noMatch", { q: emptyQuery })) : null
+           ];

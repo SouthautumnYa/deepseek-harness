@@ -212,20 +212,21 @@ body[data-skin-chrome] [data-app-frame]::before {
   z-index: -1;
   pointer-events: none;
   background-image: linear-gradient(
-      color-mix(in srgb, var(--skin-veil-soft) 72%, transparent),
-      color-mix(in srgb, var(--skin-veil-soft) 72%, transparent)
+      color-mix(in srgb, var(--skin-veil-soft) 84%, transparent),
+      color-mix(in srgb, var(--skin-veil-soft) 84%, transparent)
     ),
     var(--skin-hero);
   background-size: cover;
   background-position: var(--skin-hero-focus);
+  opacity: 0.72;
 }
 
 /* Keep the three window columns above the fixed artwork. The sidebar and
    details column retain a translucent glass surface; the conversation rule
    below adds a denser surface where long text and controls need stable
    contrast. */
-body[data-skin-chrome] [data-app-frame] > :not([data-frame-titlebar]) {
-  background: color-mix(in srgb, var(--dsw-alias-bg-base) 74%, transparent);
+body[data-skin-chrome] [data-frame-column] {
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 86%, transparent);
   backdrop-filter: var(--skin-blur);
   -webkit-backdrop-filter: var(--skin-blur);
 }
@@ -237,7 +238,7 @@ body[data-skin-chrome] [data-app-frame] > :not([data-frame-titlebar]) {
 body[data-skin-chrome] [data-conversation-panel] {
   position: relative;
   isolation: isolate;
-  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 88%, transparent);
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 94%, transparent);
   background-image: none;
   backdrop-filter: var(--skin-blur);
   -webkit-backdrop-filter: var(--skin-blur);
@@ -263,7 +264,9 @@ body[data-skin-chrome] [data-qq-show]::before {
 /* ── titlebar ───────────────────────────────────────────────────────────── */
 
 body[data-skin-chrome] [data-frame-titlebar] {
-  display: flex;
+  /* Decorative skin chrome duplicates the native window frame; keep it
+     dormant so the application content starts at the top edge. */
+  display: none;
   align-items: center;
   height: 46px;
   padding: 0 10px;

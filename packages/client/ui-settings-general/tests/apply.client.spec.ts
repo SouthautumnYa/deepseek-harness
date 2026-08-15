@@ -8,6 +8,7 @@ import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-settings-general/client'
 import { CloseLabel, HeaderContent, TriggerContent } from '../src/client/chrome.tsx'
 import { GeneralSection } from '../src/client/GeneralSection.tsx'
+import { ArchivedConversationsSection } from '../src/client/ArchivedConversationsSection.tsx'
 import { SettingsDocumentAction } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocumentAction.tsx'
 
@@ -24,7 +25,7 @@ const SEATS = [
   ['settings.section', GeneralSection],
 ] as const
 
-const seatCount = (name: string): number => name === 'settings.section' ? 2 : 1
+const seatCount = (name: string): number => name === 'settings.section' ? 3 : 1
 
 async function bench(isLoopback = true) {
   const ctx = new Context()
@@ -75,6 +76,10 @@ function generalEntry(slots: SlotRegistry) {
   return slots.entries('settings.section').find(e => e.component === GeneralSection)
 }
 
+function archivedEntry(slots: SlotRegistry) {
+  return slots.entries('settings.section').find(e => e.component === ArchivedConversationsSection)
+}
+
 describe('ui-settings-general apply', () => {
   it('declares the services it uses', () => {
     expect(inject).toEqual(['slots', 'locale', 'connection'])
@@ -91,6 +96,8 @@ describe('ui-settings-general apply', () => {
     expect(entry.options).toMatchObject({ id: 'general', order: 0 })
     // The nav label is a locale-following thunk; owners resolve at read time.
     expect(resolveSlotLabel(entry.options.label)).toBe('通用设置')
+    expect(archivedEntry(before.slots)?.options).toMatchObject({ id: 'archived-conversations', order: 40 })
+    expect(resolveSlotLabel(archivedEntry(before.slots)?.options.label)).toBe('归档对话')
     expect(before.slots.spec('settings.general.item')).toEqual({ kind: 'list', scope: 'root' })
     expect(before.slots.entries('settings.general.item')).toEqual([])
     // The onboarding hole stays declared for feature-owned steps; this plugin
@@ -147,6 +154,7 @@ describe('ui-settings-general apply', () => {
       expect(b.slots.entries(name)).toHaveLength(seatCount(name))
     })
     expect(resolveSlotLabel(generalEntry(b.slots)!.options.label)).toBe('General')
+    expect(resolveSlotLabel(archivedEntry(b.slots)!.options.label)).toBe('Archived chats')
     b.locale.setLocale('zh')
     expect(resolveSlotLabel(generalEntry(b.slots)!.options.label)).toBe('通用设置')
   })

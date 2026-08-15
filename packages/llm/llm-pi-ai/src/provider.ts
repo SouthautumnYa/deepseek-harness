@@ -25,6 +25,7 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
 import { catalogProvider } from './catalog.ts'
+import { withResponseCompatibility } from './response-compat.ts'
 
 /**
  * Wire protocols a configured route may name, mapped to pi-ai's lazily loaded
@@ -141,10 +142,26 @@ function routeAuth(spec: ProviderSpec, catalog: Provider | undefined): Provider[
  * Catalog-owned dynamic refresh is dropped: this route's catalog is the
  * settings document, and a background refresh would contradict it.
  */
+function compatibleStreams(streams: ProviderStreams): ProviderStreams {
+  return {
+    stream: (model, context, options) => withResponseCompatibility(
+      model.api,
+      model.baseUrl,
+      () => streams.stream(model, context, options),
+    ),
+    streamSimple: (model, context, options) => withResponseCompatibility(
+      model.api,
+      model.baseUrl,
+      () => streams.streamSimple(model, context, options),
+    ),
+  }
+}
+
 function reuseCatalogProvider(base: Provider, spec: ProviderSpec): Provider {
   // Provider-level `baseUrl` is display metadata: pi-ai routes every request
   // through `Model.baseUrl`, which model resolution has already overridden.
   const baseUrl = spec.baseURL ?? base.baseUrl
+  const streams = compatibleStreams(base)
   return {
     id: spec.provider,
     name: spec.displayName,
@@ -153,8 +170,8 @@ function reuseCatalogProvider(base: Provider, spec: ProviderSpec): Provider {
     getModels: () => spec.models,
     // Delegated rather than copied: the catalog provider stays the receiver, so
     // an implementation holding state on itself keeps working.
-    stream: (model, context, options) => base.stream(model, context, options),
-    streamSimple: (model, context, options) => base.streamSimple(model, context, options),
+    stream: (model, context, options) => streams.stream(model, context, options),
+    streamSimple: (model, context, options) => streams.streamSimple(model, context, options),
   }
 }
 
@@ -187,6 +204,6 @@ export function buildProvider(spec: ProviderSpec): Provider {
     ...spec.baseURL === undefined ? {} : { baseUrl: spec.baseURL },
     auth: routeAuth(spec, catalog),
     models: spec.models,
-    api: factory(),
+    api: compatibleStreams(factory()),
   })
 }

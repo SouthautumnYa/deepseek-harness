@@ -1,4 +1,18 @@
 declare module 'dsh-plugin-marketplace' {
+  type MarketplaceRepoInput = {
+    full_name: string
+    name: string
+    [key: string]: unknown
+  }
+
+  type NormalizedMarketplaceRepo = {
+    full_name: string
+    name: string
+    topics: string[]
+    category: string
+    [key: string]: unknown
+  }
+
   type MarketplaceFetchResponse = {
     ok: boolean
     status: number
@@ -18,4 +32,8 @@ declare module 'dsh-plugin-marketplace' {
     locale: string,
     options?: MarketplaceInstallOptions,
   ): Promise<string>
+
+  export function normalizeRepo(repo: MarketplaceRepoInput): NormalizedMarketplaceRepo
 }
+
+declare module 'dsh-plugin-marketplace/client'

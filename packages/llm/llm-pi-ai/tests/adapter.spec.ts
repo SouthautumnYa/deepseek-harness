@@ -271,6 +271,100 @@ describe('PiAiAdapter provider routing', () => {
     expect(result.message.content).toEqual([{ type: 'reasoning', text: 'private thought' }])
   })
 
+  it('recovers visible text when an OpenAI-compatible gateway puts it in message.content', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"full-1","choices":[{"index":0,"message":{"role":"assistant","content":"hello from message"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":3}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from message' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
+
+  it('keeps a full-message reasoning-only completion private and unsuccessful', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"reasoning-1","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"private thought"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: EMPTY_RESPONSE_CODE } })
+    expect(result.message.content).toEqual([{ type: 'reasoning', text: 'private thought' }])
+  })
+
+  it('recovers a complete JSON Anthropic-compatible message', async () => {
+    const server = await mockServer([{
+      body: JSON.stringify({
+        id: 'msg-1',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-compatible',
+        content: [{ type: 'text', text: 'hello from anthropic' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 3, output_tokens: 3 },
+      }),
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'anthropic-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'anthropic-messages',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'claude-compatible' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'anthropic-gateway',
+      model: 'claude-compatible',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from anthropic' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
   it('preserves omitted profile options when constructing the adapter directly', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = new Context()

@@ -28,14 +28,12 @@ type LoadState =
   | { status: 'ready'; history: TokenUsageHistory }
   | { status: 'error'; message: string }
 
-const todayKey = dateKeyFromTime(Date.now())
-
 function dateFromKey(key: string): Date {
   const [year = 1970, month = 1, day = 1] = key.split('-').map(Number)
   return new Date(year, month - 1, day)
 }
 
-function rangeFor(mode: RangeMode, customStart: string, customEnd: string): Range {
+function rangeFor(mode: RangeMode, customStart: string, customEnd: string, todayKey: string): Range {
   if (mode === 'custom') return { startKey: customStart, endKey: customEnd }
   const today = dateFromKey(todayKey)
   if (mode === 'today') return { startKey: todayKey, endKey: todayKey }
@@ -86,6 +84,7 @@ function Card({ label, value, detail }: { label: string; value: string; detail?:
 
 /** Render the token-usage page and its today/week/month/custom range controls. */
 export function TokenUsageSection({ connection, t }: TokenUsageSectionProps) {
+  const [todayKey] = useState(() => dateKeyFromTime(Date.now()))
   const [mode, setMode] = useState<RangeMode>('today')
   const [customStart, setCustomStart] = useState(todayKey)
   const [customEnd, setCustomEnd] = useState(todayKey)
@@ -104,7 +103,10 @@ export function TokenUsageSection({ connection, t }: TokenUsageSectionProps) {
     return () => { alive = false }
   }, [connection, reload])
 
-  const range = useMemo(() => rangeFor(mode, customStart, customEnd), [mode, customStart, customEnd])
+  const range = useMemo(
+    () => rangeFor(mode, customStart, customEnd, todayKey),
+    [customEnd, customStart, mode, todayKey],
+  )
   const validRange = range.startKey <= range.endKey
   const summary = useMemo(
     () => state.status === 'ready' && validRange

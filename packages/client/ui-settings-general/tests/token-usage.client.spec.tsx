@@ -74,15 +74,16 @@ describe('token usage fold', () => {
 
 describe('TokenUsageSection', () => {
   it('loads history, renders totals, and exposes custom date inputs', async () => {
+    const today = dateKeyFromTime(Date.now())
     const api = {
       sessions: {
         list: vi.fn(() => Promise.resolve({
           rpcId: 'list' as never,
-          result: { ok: true as const, value: { items: [{ sessionId: 's1', updatedAt: day('2026-08-14'), running: false, blank: false }] } },
+          result: { ok: true as const, value: { items: [{ sessionId: 's1', updatedAt: day(today), running: false, blank: false }] } },
         })),
         history: vi.fn(() => Promise.resolve({
           rpcId: 'history' as never,
-          result: { ok: true as const, value: { events: [event(day('2026-08-14'), 1, 1, { inputTokens: 20, outputTokens: 5 })], hasMore: false } },
+          result: { ok: true as const, value: { events: [event(day(today), 1, 1, { inputTokens: 20, outputTokens: 5 })], hasMore: false } },
         })),
       },
     }

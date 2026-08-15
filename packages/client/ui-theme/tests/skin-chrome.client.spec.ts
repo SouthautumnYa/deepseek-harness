@@ -29,16 +29,21 @@ describe('shared skin chrome layers', () => {
   })
 
   it('uses local glass surfaces instead of opacity on the content subtree', () => {
-    const shell = rule('body[data-skin-chrome] [data-app-frame] > :not([data-frame-titlebar])')
+    const shell = rule('body[data-skin-chrome] [data-frame-column]')
     const conversation = rule('body[data-skin-chrome] [data-conversation-panel]')
 
     expect(shell).toContain('background: color-mix(')
     expect(shell).toContain('backdrop-filter: var(--skin-blur);')
     expect(conversation).toContain('background-color: color-mix(')
-    expect(conversation).toContain('88%, transparent)')
+    expect(conversation).toContain('94%, transparent)')
     expect(conversation).toContain('background-image: none;')
     expect(conversation).toContain('backdrop-filter: var(--skin-blur);')
     expect(conversation).not.toMatch(/\bopacity\s*:/)
     expect(conversation).not.toMatch(/(?<!backdrop-)\bfilter\s*:/)
+  })
+
+  it('keeps the decorative titlebar hidden so the skin does not add a second window chrome', () => {
+    const titlebar = rule('body[data-skin-chrome] [data-frame-titlebar]')
+    expect(titlebar).toContain('display: none;')
   })
 })
