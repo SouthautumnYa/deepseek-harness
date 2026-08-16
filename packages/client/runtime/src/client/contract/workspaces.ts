@@ -91,4 +91,8 @@ export interface IWorkspaces {
    * @param sessionId - session to archive.
    */
   archiveSession(sessionId: SessionId): Promise<void>
+  /** Restore a session from the registry-global archive set. */
+  unarchiveSession(sessionId: SessionId): Promise<void>
+  /** Permanently delete a conversation and all of its local state. */
+  deleteSession(sessionId: SessionId): Promise<void>
 }

@@ -139,6 +139,10 @@ export default defineConfig({
       // Browserization of the vendored cordis Loader: its only node-only
       // import; the two process probes are mapped by `define` below.
       { find: /^node:module$/, replacement: src('./src/node-module-stub.ts') },
+      // The Loader is a vendored package with Cordis as a peer dependency.
+      // Its own node_modules intentionally does not contain peer links, so a
+      // browser build must pin the peer to the workspace singleton explicitly.
+      { find: /^@deepseek-ai\/cordis$/, replacement: src('../../vendor/cordis/lib/index.js') },
       { find: /^@deepseek-ai\/dsh-client-web$/, replacement: src('../../packages/client/web/src/boot.tsx') },
       { find: /^@deepseek-ai\/dsh-client-web-react$/, replacement: src('../../packages/client/web-react/src/index.ts') },
       { find: /^@deepseek-ai\/dsh-client-ui-slots$/, replacement: src('../../packages/client/ui-slots/src/index.ts') },

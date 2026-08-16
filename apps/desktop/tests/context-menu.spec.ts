@@ -16,6 +16,15 @@ describe('desktop native edit context menu', () => {
     ])
   })
 
+  it('keeps paste enabled when Chromium reports a stale paste flag', () => {
+    const items = buildEditContextMenuTemplate({
+      isEditable: true,
+      selectionText: '',
+      editFlags: { ...flags, canPaste: false },
+    })
+    expect(items.find(item => 'role' in item && item.role === 'paste')).toMatchObject({ enabled: true })
+  })
+
   it('keeps message text selectable without exposing paste', () => {
     const items = buildEditContextMenuTemplate({
       isEditable: false,

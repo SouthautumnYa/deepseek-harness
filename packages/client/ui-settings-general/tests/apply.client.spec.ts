@@ -51,6 +51,11 @@ async function bench(isLoopback = true) {
     api: { settings: { describe: settingsDescribe, openDocument: settingsOpenDocument } },
     isLoopback,
   } as never)
+  ctx.provide('workspaces', {
+    unarchiveSession: vi.fn(() => Promise.resolve({
+      result: { ok: true, value: { archivedSessionIds: [] } },
+    })),
+  } as never)
   return { ctx, slots: ctx.get('slots') as SlotRegistry, locale, settingsDescribe, settingsOpenDocument }
 }
 
@@ -82,7 +87,7 @@ function archivedEntry(slots: SlotRegistry) {
 
 describe('ui-settings-general apply', () => {
   it('declares the services it uses', () => {
-    expect(inject).toEqual(['slots', 'locale', 'connection'])
+    expect(inject).toEqual(['slots', 'locale', 'connection', 'workspaces'])
   })
 
   it('fills all five seats for declarations before or after apply', async () => {

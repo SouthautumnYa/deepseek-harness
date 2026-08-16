@@ -15,4 +15,4 @@
 # Unified diff patch files must keep a single leading space on blank context
 # lines; without this path-specific rule `git diff --check` misclassifies valid
 # patch syntax as trailing whitespace.
-patches/*.patch whitespace=-blank-at-eol
+patches/*.patch whitespace=-blank-at-eol,-blank-at-eof

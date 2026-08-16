@@ -9,7 +9,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { readdirSync } from 'node:fs'
-import { open, mkdir, readFile, readdir, realpath, link, rm, stat, truncate } from 'node:fs/promises'
+import { open, mkdir, readFile, readdir, realpath, link, rm, rmdir, stat, truncate } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { scheduler } from 'node:timers/promises'
@@ -160,7 +160,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     this.coordinator = new PersistenceCoordinator<JsonlTornMarker>(this.ctx, this, {
       preparedSessionCacheSize,
       writeBatchMaxDelayMs,
-    })
+    }, this.deleteStored.bind(this))
   }
 
   // Each backend keeps the typed service API beside its storage hooks;
@@ -179,6 +179,10 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
 
   append(id: SessionId, events: readonly SessionEvent[]): Promise<void> {
     return this.coordinator.append(id, events)
+  }
+
+  override delete(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    return this.coordinator.delete(id, signal)
   }
 
   override prepare(id: SessionId, signal?: AbortSignal): Promise<SessionPreparation> {
@@ -441,6 +445,39 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     if (tornMarker !== undefined) await this.repair(meta, tornMarker.truncateTo)
     const repairedEvents = [...(tornMarker?.recoveredEvents ?? []), ...closers]
     if (repairedEvents.length > 0) await this.appendLines(meta, repairedEvents)
+  }
+
+  /**
+   * Delete both supported physical encodings of one id, including the former
+   * flat-file layout. Paths are derived only from the encoded id and are never
+   * removed recursively; empty session/project directories are best-effort
+   * cleanup only, and the configured root is never a deletion target.
+   */
+  private async deleteStored(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    let deleted = false
+    for (const project of await this.listProjectDirs(signal)) {
+      signal?.throwIfAborted()
+      const encoded = encodeSegment(id)
+      const session = join(project, encoded)
+      const candidates = [
+        join(session, 'session.jsonl.zstd'),
+        join(session, 'session.jsonl'),
+        join(project, `${encoded}.jsonl.zstd`),
+        join(project, `${encoded}.jsonl`),
+      ]
+      for (const path of candidates) {
+        signal?.throwIfAborted()
+        if (!await this.exists(path)) continue
+        await rm(path, { force: true })
+        deleted = true
+        signal?.throwIfAborted()
+      }
+      await this.removeEmptyDirectory(session, signal)
+      await this.removeEmptyDirectory(project, signal)
+    }
+    signal?.throwIfAborted()
+    return deleted
   }
 
   /** List valid unique stored sessions' metadata (header line only — no full-log parse). */
@@ -857,6 +894,19 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     } catch (error) {
       // Only an absent root means no sessions; rethrow every other I/O failure.
       if (isENOENT(error)) return []
+      throw error
+    }
+  }
+
+  /** Remove only an empty derived directory; retain metadata and other sessions. */
+  private async removeEmptyDirectory(path: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    try {
+      await rmdir(path)
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'EEXIST') return
       throw error
     }
   }

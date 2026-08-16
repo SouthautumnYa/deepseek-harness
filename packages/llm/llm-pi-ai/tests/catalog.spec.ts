@@ -863,11 +863,16 @@ describe('reasoning-dispatch compat switches', () => {
     expect(models.get('dialect-default')?.compat).toEqual({
       thinkingFormat: 'deepseek',
       supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+      supportsStore: false,
+      maxTokensField: 'max_tokens',
     })
     expect(models.get('dialect-odd')?.compat).toEqual({
       thinkingFormat: 'openai',
       supportsReasoningEffort: false,
       supportsDeveloperRole: false,
+      supportsStore: false,
+      maxTokensField: 'max_tokens',
     })
   })
 

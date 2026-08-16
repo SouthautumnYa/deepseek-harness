@@ -276,11 +276,35 @@
     # Mobile Connect: QR login and binding management for the IM bridge.
     - id: ui-settings-im
       name: '@dsh-extra/dsh-client-ui-settings-im'
+      config: {}
 
     # Provider-aware Fast mode. The plugin owns the capability matrix and
     # injects only native Fast parameters for verified provider/model/API pairs.
     - id: dsh-model-modes
       name: 'dsh-model-modes'
+      config:
+        # The desktop's configured third-party routes use the OpenAI
+        # Completions wire shape. These exact provider profiles make Fast
+        # available for their advertised models without guessing for every
+        # unknown gateway in the world.
+        includeDefaultFastProfiles: true
+        fastProfiles:
+          - provider: geili
+            model: '*'
+            api: openai-completions
+            strategy: openai-fast
+          - provider: geili
+            model: '*'
+            api: openai-responses
+            strategy: openai-fast
+          - provider: gpt
+            model: '*'
+            api: openai-completions
+            strategy: openai-fast
+          - provider: gpt
+            model: '*'
+            api: openai-responses
+            strategy: openai-fast
 
     # Optional routing-suite injector. The package is a pinned GitHub Release
     # tarball so the desktop runtime carries the built artifact without

@@ -98,7 +98,7 @@ External packages that a workspace package resolves at runtime. The tier covers 
 
 pnpm applies local patches to the following packages at install time, so shipped artifacts carry modified copies; each patch file is the complete record of the modification:
 
-- `dsh-plugin-marketplace@1.3.13` — [`patches/dsh-plugin-marketplace@1.3.13.patch`](patches/dsh-plugin-marketplace@1.3.13.patch)
+- `dsh-plugin-marketplace@1.4.12` — [`patches/dsh-plugin-marketplace@1.4.12.patch`](patches/dsh-plugin-marketplace@1.4.12.patch)
 - `node-pty@1.1.0` — [`patches/node-pty@1.1.0.patch`](patches/node-pty@1.1.0.patch)
 
 ## Official Claude Code platform payloads

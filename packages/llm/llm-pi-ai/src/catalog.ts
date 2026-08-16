@@ -198,6 +198,30 @@ const THIRD_PARTY_REASONING_EFFORTS: PiAiReasoningEfforts = {
   max: 'max',
 }
 
+/**
+ * Model families whose public ids conventionally expose a thinking control.
+ * A hand-declared route has no provider metadata, so an arbitrary chat model
+ * must not be presented with a selector that sends parameters its gateway may
+ * reject. Explicit `reasoningEfforts` remains the escape hatch for a private
+ * model whose name does not carry one of these family hints.
+ */
+function isThirdPartyReasoningModel(modelId: string, modelName: string | undefined): boolean {
+  const values = [modelId, modelName ?? ''].map(normalizeModelName)
+  return values.some(value => (
+    value.includes('deepseek')
+    || value.includes('qwen3')
+    || value.includes('kimi-k3')
+    || value.includes('reasoning')
+    || value.includes('thinking')
+    || value.includes('think')
+    || value.includes('codex')
+    || /(?:^|-)r(?:1|2)(?:-|$)/.test(value)
+    || /(?:^|-)o(?:1|3|4)(?:-|$)/.test(value)
+    || /(?:^|-)gpt-5(?:-|$)/.test(value)
+    || /(?:^|-)glm-(?:4|5)(?:-|$)/.test(value)
+  ))
+}
+
 /** Match common model-id context suffixes such as `128k`, `256K`, or `1m`. */
 const CONTEXT_SUFFIX = /(?:^|[-_.:/\s])([0-9]+(?:\.[0-9]+)?)\s*(k|m)(?=$|[-_.:/\s])/gi
 
@@ -332,14 +356,23 @@ function inferThirdPartyCompat(
   modelId: string,
   modelName: string | undefined,
   api: string,
+  reasoningConfigured: boolean,
 ): OpenAICompletionsCompat | undefined {
   if (api !== 'openai-completions') return undefined
+  // A hand-declared route normally points at a proxy that implements the
+  // long-lived Chat Completions contract, not the newer OpenAI-only additions.
+  // Set these baseline fields before applying family-specific reasoning
+  // dialects below. Without them pi-ai sends `store` and
+  // `max_completion_tokens`, which many otherwise compatible gateways reject.
+  const common: OpenAICompletionsCompat = {
+    supportsStore: false,
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: reasoningConfigured || isThirdPartyReasoningModel(modelId, modelName),
+    maxTokensField: 'max_tokens',
+  }
   if (isKimiK3Model(modelId, modelName)) {
     return {
-      supportsStore: false,
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      maxTokensField: 'max_tokens',
+      ...common,
       thinkingFormat: 'openai',
       requiresReasoningContentOnAssistantMessages: true,
       deferredToolsMode: 'kimi',
@@ -348,20 +381,27 @@ function inferThirdPartyCompat(
   const values = [modelId, modelName ?? ''].map(normalizeModelName)
   if (values.some(value => value.includes('qwen3'))) {
     return {
-      supportsStore: false,
-      supportsDeveloperRole: false,
+      ...common,
       thinkingFormat: 'qwen',
+    }
+  }
+  if (values.some(value => /(?:^|-)glm-(?:4|5)(?:-|$)/.test(value))) {
+    return {
+      ...common,
+      thinkingFormat: 'zai',
+      // GLM-compatible gateways commonly accept the Z.AI thinking switch but
+      // reject the OpenAI-only `reasoning_effort` field.
+      supportsReasoningEffort: false,
     }
   }
   if (values.some(value => /deepseek-v[34]/.test(value))) {
     return {
-      supportsStore: false,
-      supportsDeveloperRole: false,
+      ...common,
       thinkingFormat: 'deepseek',
       requiresReasoningContentOnAssistantMessages: true,
     }
   }
-  return undefined
+  return common
 }
 
 /**
@@ -618,7 +658,9 @@ function resolveModelCompat(
   // model starts from pi-ai's baseURL-derived detection instead, which is
   // what a protocol change means for every other compat field too.
   const inherited: OpenAICompletionsCompat | undefined = base?.api === api ? base.compat : undefined
-  const inferred = base === undefined ? inferThirdPartyCompat(entry.id, entry.name, api) : undefined
+  const inferred = base === undefined
+    ? inferThirdPartyCompat(entry.id, entry.name, api, entry.reasoningEfforts !== undefined && entry.reasoningEfforts !== false)
+    : undefined
   // A hand-declared route has no catalog metadata. OpenAI-compatible gateways
   // commonly accept reasoning controls while rejecting `role: "developer"`,
   // so system is the safe default. Catalog models retain pi-ai's known value,

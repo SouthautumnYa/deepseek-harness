@@ -48,6 +48,33 @@ async function backend(path = ':memory:'): Promise<{ ctx: Context; dispose: () =
   return { ctx, dispose: () => fiber.dispose() }
 }
 
+describe('SqliteSessionPersistence deletion', () => {
+  it('deletes the session row and cascades its events in one transaction', async () => {
+    const path = await freshDbPath()
+    const mounted = await backend(path)
+    try {
+      const m = { ...meta('sqlite-delete', '/sqlite-delete') }
+      await mounted.ctx.sessionPersistence.create(m)
+      await mounted.ctx.sessionPersistence.append(m.id, oneTurnLog())
+
+      expect(await mounted.ctx.sessionPersistence.delete(m.id)).toBe(true)
+      expect(await mounted.ctx.sessionPersistence.delete(m.id)).toBe(false)
+
+      const db = openDatabase(path, 'wal')
+      try {
+        expect((db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE id = ?').get(m.id) as { count: number }).count)
+          .toBe(0)
+        expect((db.prepare('SELECT COUNT(*) AS count FROM events WHERE session_id = ?').get(m.id) as { count: number }).count)
+          .toBe(0)
+      } finally {
+        db.close()
+      }
+    } finally {
+      await mounted.dispose()
+    }
+  })
+})
+
 // Run the same backend-agnostic contract as JSONL to pin identical semantics.
 runPersistenceContract('sqlite', async () => {
   const ctx = new Context()

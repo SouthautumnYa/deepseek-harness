@@ -134,7 +134,7 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
     this.coordinator = new PersistenceCoordinator<number>(this.ctx, this, {
       preparedSessionCacheSize,
       writeBatchMaxDelayMs,
-    })
+    }, this.deleteStored.bind(this))
   }
 
   private async openDb(path: string, journalMode: JournalMode): Promise<void> {
@@ -180,6 +180,10 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
 
   append(id: SessionId, events: readonly SessionEvent[]): Promise<void> {
     return this.coordinator.append(id, events)
+  }
+
+  override delete(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    return this.coordinator.delete(id, signal)
   }
 
   override prepare(id: SessionId, signal?: AbortSignal): Promise<SessionPreparation> {
@@ -334,6 +338,22 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
       this.db.exec('ROLLBACK')
       throw error
       /* v8 ignore stop */
+    }
+  }
+
+  /** Delete the session row and its events atomically; the FK cascades events. */
+  private async deleteStored(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    await this.ready
+    signal?.throwIfAborted()
+    this.db.exec('BEGIN')
+    try {
+      const result = this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+      this.db.exec('COMMIT')
+      return result.changes > 0
+    } catch (error: unknown) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 

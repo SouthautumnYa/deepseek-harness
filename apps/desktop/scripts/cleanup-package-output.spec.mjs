@@ -7,7 +7,9 @@ import test from 'node:test'
 
 import {
   cleanupRuntime,
+  cleanupOldInstallers,
   cleanupWinUnpacked,
+  getReleasePath,
   getRuntimePath,
   getWinUnpackedPath,
 } from './cleanup-package-output.mjs'
@@ -29,7 +31,7 @@ test('Windows packaging keeps only the required Electron locales and cleans its 
   assert.match(installerInclude, /RMDir \/r \"\$INSTDIR\"/)
   assert.doesNotMatch(installerInclude, /ExecWait/)
   assert.doesNotMatch(installerInclude, /!insertmacro _CHECK_APP_RUNNING/)
-  assert.match(desktopPackage.scripts['package:win'], /electron-builder --win nsis && node scripts\/cleanup-package-output\.mjs --apply --include-runtime/)
+  assert.match(desktopPackage.scripts['package:win'], /electron-builder --win nsis && node scripts\/cleanup-package-output\.mjs --apply --include-runtime --prune-old-installers/)
 })
 
 test('removes only generated win-unpacked output and preserves user data', async () => {
@@ -85,6 +87,30 @@ test('cleans the generated runtime without touching neighboring user data', asyn
     assert.equal(result.removed, true)
     assert.equal(existsSync(target), false)
     assert.equal(existsSync(join(userData, 'session.json')), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('prunes only superseded installers and preserves the current installer and metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-package-cleanup-installers-'))
+
+  try {
+    await writeFile(join(root, 'package.json'), JSON.stringify({ version: '0.1.0-rc.10' }))
+    const release = getReleasePath(root)
+    await mkdir(release, { recursive: true })
+    await writeFile(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.8.exe'), 'old')
+    await writeFile(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.8.exe.blockmap'), 'old')
+    await writeFile(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.10.exe'), 'current')
+    await writeFile(join(release, 'latest.yml'), 'metadata')
+
+    const result = await cleanupOldInstallers({ root, apply: true })
+
+    assert.equal(result.removed, true)
+    assert.equal(existsSync(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.8.exe')), false)
+    assert.equal(existsSync(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.8.exe.blockmap')), false)
+    assert.equal(existsSync(join(release, 'DeepSeek-Harness-Setup-0.1.0-rc.10.exe')), true)
+    assert.equal(existsSync(join(release, 'latest.yml')), true)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

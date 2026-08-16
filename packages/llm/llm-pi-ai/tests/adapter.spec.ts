@@ -202,6 +202,44 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.requests[1]).toMatchObject({ enable_thinking: true })
   })
 
+  it('uses the legacy Chat Completions baseline for ordinary third-party models', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'ordinary-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'gpt-5.6-luna' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'ordinary-gateway',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: ReasoningEffortId('high'),
+      system: 'system prompt',
+      maxTokens: 77,
+      messages: [],
+    })
+
+    const request = server.requests[0] as {
+      messages?: { role?: string }[]
+      reasoning_effort?: string
+      max_tokens?: number
+      max_completion_tokens?: number
+      store?: boolean
+    }
+    expect(request).toMatchObject({ reasoning_effort: 'high', max_tokens: 77 })
+    expect(request).not.toHaveProperty('max_completion_tokens')
+    expect(request).not.toHaveProperty('store')
+    expect(request.messages?.[0]?.role).toBe('system')
+    expect(request.messages?.some(message => message.role === 'developer')).toBe(false)
+  })
+
   it('keeps reasoning levels while sending system instead of developer to hand-declared gateways', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = new Context()
@@ -298,6 +336,36 @@ describe('PiAiAdapter provider routing', () => {
     })
 
     expect(result.message.content).toEqual([{ type: 'text', text: 'hello from message' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
+
+  it('terminates an SSE complete-message frame whose finish reason is null', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"full-sse-1","choices":[{"index":0,"message":{"role":"assistant","content":"hello from sse"},"finish_reason":null}],"usage":{"prompt_tokens":3,"completion_tokens":3}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from sse' }])
     expect(result.finish).toEqual({ kind: 'stop' })
   })
 

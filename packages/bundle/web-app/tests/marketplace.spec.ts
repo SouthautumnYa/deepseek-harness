@@ -16,7 +16,7 @@ describe('web-app marketplace integration', () => {
     ) as { dependencies?: Record<string, string> }
     const source = manifest.dependencies?.['dsh-plugin-marketplace']
     expect(source).toBe(
-      'git+https://github.com/bradeGithub/DSH-Plugins-Marketplace.git#d73d0d74bbb60cf18305b597b62f90292b69595b',
+      'git+https://github.com/bradeGithub/DSH-Plugins-Marketplace.git#568cb84132425c0d5361b0c6c6f9ce8ee5e5f35e',
     )
 
     const parsed = yaml.load(

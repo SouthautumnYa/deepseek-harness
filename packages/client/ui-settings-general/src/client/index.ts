@@ -9,6 +9,7 @@
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
+import type { IWorkspaces } from '@deepseek-ai/dsh-client-runtime/client'
 import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
 // Type-only: the settings slot declarations plus the ctx.settingsScope Context
@@ -57,7 +58,7 @@ const NS = 'settings'
  * ui-settings' apply, whose activation order relative to this one is NOT
  * constrained; registrations depend on their slots through `slots.inject()`.
  */
-export const inject = ['slots', 'locale', 'connection']
+export const inject = ['slots', 'locale', 'connection', 'workspaces']
 
 /**
  * Register the `settings` dictionaries, the chrome content, and the General
@@ -72,6 +73,7 @@ export function apply(ctx: ClientContext): void {
   // locale/change re-registration wiring.
   const t = ctx.locale.bind(NS)
   const connection = ctx.get('connection') as ConnectionHandle
+  const workspaces = ctx.get('workspaces') as IWorkspaces
   const documentController = connection.isLoopback
     ? new SettingsDocumentStore(connection.api)
     : undefined
@@ -103,6 +105,7 @@ export function apply(ctx: ClientContext): void {
           if (version !== rowsVersion || revision !== rowsRevision) {
             rowsVersion = version
             rowsRevision = revision
+            const seen = new Set<string>()
             rows = ctx.slots.entries('settings.section')
               .map(e => ({
                 /* v8 ignore next -- list-slot registration requires id (SlotCore rejects an entry without one) */
@@ -110,6 +113,12 @@ export function apply(ctx: ClientContext): void {
                 order: e.options.order ?? 0,
                 label: resolveSlotLabel(e.options.label) ?? '',
               }))
+              .filter(row => row.id.length > 0 && row.label.length > 0)
+              .filter((row) => {
+                if (seen.has(row.id)) return false
+                seen.add(row.id)
+                return true
+              })
               .sort((a, b) => a.order - b.order)
           }
           return rows
@@ -184,6 +193,10 @@ export function apply(ctx: ClientContext): void {
     order: 40,
     label: () => t('archived.nav'),
     locale: NS,
+    inject: () => ({
+      restoreSession: (sessionId: Parameters<IWorkspaces['unarchiveSession']>[0]) => workspaces.unarchiveSession(sessionId),
+      deleteSession: (sessionId: Parameters<IWorkspaces['deleteSession']>[0]) => workspaces.deleteSession(sessionId),
+    }),
   }, ArchivedConversationsSection))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',

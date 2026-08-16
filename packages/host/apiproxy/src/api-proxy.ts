@@ -110,6 +110,13 @@ import {
 } from '@deepseek-ai/dsh-api-remotes'
 import { canOpenNativePath, openNativePath, openNativeTextFile } from './native-path-opener.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /** Host-only notification for deleting a cold session with no live Session object. */
+    'session/removed'(payload: { sessionId: SessionId }): void
+  }
+}
+
 /** Page size when history is called without maxMessages. */
 const DEFAULT_MAX_MESSAGES = 50
 
@@ -2918,6 +2925,60 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }
         return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
       },
+
+      async unarchiveSession(request) {
+        await ctx.workspaceRegistry.unarchiveSession(request.payload.sessionId)
+        return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
+      },
+
+      async deleteSession(request) {
+        const { sessionId } = request.payload
+        const persistence = ctx.get('sessionPersistence')
+        if (persistence === undefined) {
+          return err(request, {
+            code: 'internal',
+            message: 'session persistence is not configured',
+            details: { sessionId },
+          })
+        }
+
+        // A client may retry while a create/resume request for this id is still
+        // publishing. Join that operation before deciding whether the session
+        // exists, so deletion cannot race a late publication into resurrection.
+        const creation = sessionCreations.get(sessionId)
+        if (creation !== undefined) await creation.catch(() => undefined)
+
+        const liveSession = ctx.sessions.get(sessionId)
+        const persisted = liveSession === undefined
+          ? (await persistence.list()).some(header => header.id === sessionId)
+          : true
+        if (!persisted) {
+          return err(request, {
+            code: 'session-not-found',
+            message: `session "${sessionId}" not found`,
+            details: { sessionId },
+          })
+        }
+
+        const liveAgent = ctx.agents.get(sessionId)
+        if (liveSession !== undefined && liveAgent === undefined) {
+          return err(request, {
+            code: 'internal',
+            message: `session "${sessionId}" is live without an Agent lifecycle`,
+            details: { sessionId },
+          })
+        }
+        const wasLive = liveAgent !== undefined
+        if (wasLive) await ctx.agents.disposeAgent(sessionId)
+
+        // Remove grouping state before the durable artifact. If the final
+        // storage step fails, the conversation remains available but is
+        // ungrouped and the request can be retried without a stale account.
+        await ctx.workspaceRegistry.deleteSession(sessionId)
+        await persistence.delete(sessionId)
+        if (!wasLive) ctx.emit('session/removed', { sessionId })
+        return ok(request, { deleted: true as const })
+      },
     },
 
     host: {
@@ -3556,6 +3617,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           }),
           ctx.on('session/disposed', (session: Session) => {
             queue.push(frame({ type: 'host/session-removed', sessionId: session.id }))
+          }),
+          ctx.on('session/removed', ({ sessionId }: { sessionId: SessionId }) => {
+            queue.push(frame({ type: 'host/session-removed', sessionId }))
           }),
           ctx.on('agent/status', ({ agent, status }: { agent: Agent; status: AgentStatus }) => {
             queue.push(frame({ type: 'host/session-status', sessionId: agent.id, running: status === 'running' }))

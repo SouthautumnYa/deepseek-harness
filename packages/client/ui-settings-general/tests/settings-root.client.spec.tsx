@@ -98,6 +98,16 @@ describe('SettingsRoot trigger', () => {
 })
 
 describe('SettingsPanel chrome seats', () => {
+  it('portals the viewport dialog outside the sidebar render seat', () => {
+    const { view } = mount()
+    openPanel()
+
+    const overlay = document.body.querySelector('[data-settings-overlay]')
+    expect(overlay).not.toBeNull()
+    expect(view.container.querySelector('[data-settings-overlay]')).toBeNull()
+    expect(overlay!.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
   it('names the dialog via aria-labelledby pointing at the header seat node', () => {
     mount()
     openPanel()

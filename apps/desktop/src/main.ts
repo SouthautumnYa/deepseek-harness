@@ -337,6 +337,7 @@ function createWindow(webUrl: string): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    autoHideMenuBar: true,
     title: 'DeepSeek Harness',
     icon: join(desktopRoot, 'assets', 'whale-icon.png'),
     backgroundColor: '#f7f7f8',
@@ -346,6 +347,9 @@ function createWindow(webUrl: string): BrowserWindow {
       sandbox: true,
     },
   })
+  // Keep the native application menu from creating a second horizontal bar
+  // even when Windows restores a menu state from an older installation.
+  window.setMenuBarVisibility(false)
   mainWindow = window
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -462,6 +466,9 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    // The desktop shell owns window chrome. Electron's default application
+    // menu otherwise adds a second horizontal strip above the Web UI.
+    Menu.setApplicationMenu(null)
     createTray()
     return boot()
   }).catch(async (error: unknown) => {

@@ -21,6 +21,9 @@ async function bench() {
     api: { settings: { describe: async () => ({ result: { ok: false } }) } },
     isLoopback: false,
   } as never)
+  ctx.provide('workspaces', {
+    unarchiveSession: async () => ({ result: { ok: true, value: { archivedSessionIds: [] } } }),
+  } as never)
   ctx.provide('remote', { $on: () => () => {} } as never)
   return { ctx, slots: ctx.get('slots') as SlotRegistry }
 }
@@ -49,7 +52,7 @@ const CHILD_SPECS = {
 
 describe('ui-settings apply', () => {
   it('declares only the slot registry (a pure composition face, no locale)', () => {
-    expect(inject).toEqual(['slots', 'locale', 'connection'])
+    expect(inject).toEqual(['slots', 'locale', 'connection', 'workspaces'])
   })
 
   it('registers the shell and declares every child slot, before or after the declaration', async () => {
@@ -88,7 +91,6 @@ describe('ui-settings apply', () => {
     const rows = sections.getSnapshot()
     expect(rows).toEqual([
       GENERAL,
-      { id: 'a', order: 0, label: '' },
       { id: 'z', order: 20, label: 'Z' },
       ARCHIVED,
       TOKEN_USAGE,

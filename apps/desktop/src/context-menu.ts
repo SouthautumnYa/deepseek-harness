@@ -13,7 +13,9 @@ export function buildEditContextMenuTemplate(
     items.push(
       { label: '剪切', role: 'cut', enabled: editFlags.canCut },
       { label: '复制', role: 'copy', enabled: editFlags.canCopy },
-      { label: '粘贴', role: 'paste', enabled: editFlags.canPaste },
+      // Electron can report `canPaste: false` for contenteditable elements
+      // while the native paste role still works with the system clipboard.
+      { label: '粘贴', role: 'paste', enabled: true },
     )
   } else if (selectionText.length > 0) {
     items.push({ label: '复制', role: 'copy', enabled: true })

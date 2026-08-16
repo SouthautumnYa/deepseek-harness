@@ -1240,6 +1240,32 @@ describe('JsonlSessionPersistence: edge cases', () => {
     expect((await ctx.sessionPersistence.load(m.id)).events).toEqual(oneTurnLog())
   })
 
+  it('deletes current and legacy flat artifacts without touching other sessions or the root', async () => {
+    const target = meta('delete-files', '/delete-files')
+    const retained = meta('retain-files', '/delete-files')
+    await ctx.sessionPersistence.create(target)
+    await ctx.sessionPersistence.append(target.id, oneTurnLog())
+    await ctx.sessionPersistence.create(retained)
+    await ctx.sessionPersistence.append(retained.id, oneTurnLog())
+
+    expect(await ctx.sessionPersistence.delete(target.id)).toBe(true)
+    await expect(stat(rawLogPath(root, target.cwd, target.id))).rejects.toThrow()
+    expect((await ctx.sessionPersistence.list()).map(header => header.id)).toEqual([retained.id])
+    expect((await stat(root)).isDirectory()).toBe(true)
+
+    const legacy = meta('delete-legacy-flat', '/legacy-delete')
+    const project = projectDir(root, legacy.cwd)
+    await mkdir(project, { recursive: true })
+    const encoded = encodeSegment(legacy.id)
+    await writeFile(join(project, `${encoded}.jsonl`), 'legacy plain\n')
+    await writeFile(join(project, `${encoded}.jsonl.zstd`), 'legacy compressed\n')
+
+    expect(await ctx.sessionPersistence.delete(legacy.id)).toBe(true)
+    await expect(stat(join(project, `${encoded}.jsonl`))).rejects.toThrow()
+    await expect(stat(join(project, `${encoded}.jsonl.zstd`))).rejects.toThrow()
+    expect((await stat(root)).isDirectory()).toBe(true)
+  })
+
   it('rejects the obsolete flat-file layout instead of ignoring stored sessions', async () => {
     const m = meta('legacy-flat', '/legacy')
     const project = projectDir(root, m.cwd)

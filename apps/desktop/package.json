@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-desktop",
   "description": "Windows desktop shell for DeepSeek Harness",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.12",
   "publishConfig": {
     "access": "public"
   },
@@ -25,7 +25,7 @@
     "test:package-cleanup": "node --test scripts/cleanup-package-output.spec.mjs",
     "clean:package-output": "node scripts/cleanup-package-output.mjs --apply --include-runtime",
     "dev": "pnpm run build && electron .",
-    "package:win": "pnpm run build && pnpm run stage-runtime && electron-builder --win nsis && node scripts/cleanup-package-output.mjs --apply --include-runtime",
+    "package:win": "pnpm run build && pnpm run stage-runtime && electron-builder --win nsis && node scripts/cleanup-package-output.mjs --apply --include-runtime --prune-old-installers",
     "package:dir": "pnpm run build && pnpm run stage-runtime && electron-builder --dir"
   },
   "build": {

@@ -216,7 +216,13 @@ function normalizeFrame(frame: string, api: SupportedApi): string {
   try { payload = JSON.parse(parsed.data) } catch { return frame + '\n\n' }
   if (!record(payload)) return frame + '\n\n'
   if (api === 'openai-completions') {
-    const normalized = normalizeOpenAi(payload, false)
+    // Some gateways wrap a complete assistant message in one SSE frame and
+    // leave finish_reason null because they normally rely on a later delta.
+    // There is no later delta when the frame is the whole response, so make
+    // the SDK-visible completion terminal in that shape.
+    const completeMessage = Array.isArray(payload.choices) && payload.choices.some(value =>
+      record(value) && (record(value.message) || value.text !== undefined))
+    const normalized = normalizeOpenAi(payload, completeMessage)
     return normalized === undefined ? frame + '\n\n' : sse(undefined, normalized)
   }
   const known = ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop', 'ping', 'error']

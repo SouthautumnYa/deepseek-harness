@@ -1,21 +1,13 @@
 .frame {
   position: relative; /* anchors the drag handles, which straddle column borders */
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr;
   height: 100%;
   overflow: hidden;
   background: var(--dsw-alias-bg-base);
   /* Collapse/expand animates the tracks on the deepsuite sider curve
      (--ds-ease-in-out / --ds-transition-duration-slow, ui-theme base.css). */
   transition: grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);
-}
-
-/* deepseek-harness-skin: the titlebar spans every column on its own row.
-   Visibility and all visuals belong to the skin sheets (default skins hide
-   it); the module owns only the grid placement. */
-.titlebar {
-  grid-column: 1 / -1;
-  min-width: 0;
 }
 
 /* Dragging writes widths at pointer cadence; easing them would detach the

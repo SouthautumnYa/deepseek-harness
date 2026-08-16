@@ -1,4 +1,4 @@
-import { readdir, rm, stat } from 'node:fs/promises'
+import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,9 +29,28 @@ const REQUIRED_RUNTIME_PACKAGES = [
   '@deepseek-ai/dsh-command-compact',
 ]
 
+const FRONTEND_ASSET_URL = /url\(\s*(['"]?)(\/assets\/[^\s'"\)]+)\1\s*\)/g
+
 execFileSync(process.execPath, [resolve(workspaceRoot, 'scripts', 'sync-routing-suite-preset.mjs')], {
   cwd: workspaceRoot,
   stdio: 'inherit',
+})
+
+// Desktop packaging can be invoked without the repository-wide build. Refresh
+// the static server first so a source-side MIME/resource fix cannot be hidden
+// by an older lib copied into the staged runtime.
+execFileSync(pnpm, ['exec', 'tsc', '-b', 'packages/host/frontend-static/tsconfig.json'], {
+  cwd: workspaceRoot,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+})
+execFileSync(pnpm, [
+  'exec', 'tsdown', '--workspace', '--filter', '@deepseek-ai/dsh-host-frontend-static',
+  '--env.DSH_BUILD_FACE', 'host',
+], {
+  cwd: workspaceRoot,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
 })
 
 async function pruneRuntime(root) {
@@ -62,6 +81,40 @@ async function pruneRuntime(root) {
   return { removedFiles, removedBytes }
 }
 
+/**
+ * Verify the production frontend still contains every skin image emitted by
+ * Vite. The skin CSS is bundled into dist/assets and references hashed files
+ * in that same directory; staging must fail before packaging if one side is
+ * missing, otherwise the UI quietly falls back to the palette-only skin.
+ */
+async function verifyFrontendSkinAssets(root) {
+  const frontendDist = join(root, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist')
+  const assetRoot = join(frontendDist, 'assets')
+  const entries = await readdir(assetRoot, { withFileTypes: true })
+  const cssFiles = entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.css'))
+    .map(entry => join(assetRoot, entry.name))
+  const references = new Set()
+  for (const cssFile of cssFiles) {
+    const css = await readFile(cssFile, 'utf8')
+    for (const match of css.matchAll(FRONTEND_ASSET_URL)) {
+      const url = match[2]
+      if (url !== undefined && /\.(?:avif|gif|jpe?g|png|webp)(?:\?.*)?$/i.test(url)) references.add(url)
+    }
+  }
+  if (references.size === 0) {
+    throw new Error('Desktop runtime staging failed: frontend skin CSS contains no image assets')
+  }
+  const missing = [...references].filter(url => {
+    const name = decodeURIComponent(url.slice('/assets/'.length))
+    return !existsSync(join(assetRoot, name))
+  })
+  if (missing.length > 0) {
+    throw new Error(`Desktop runtime staging failed: missing frontend skin assets: ${missing.join(', ')}`)
+  }
+  console.log(`Desktop skin assets verified: ${String(references.size)} image references`)
+}
+
 await rm(runtimeRoot, { recursive: true, force: true })
 execFileSync(pnpm, [
   'deploy',
@@ -70,6 +123,7 @@ execFileSync(pnpm, [
   '--prod',
   '--config.inject-workspace-packages=true',
   '--config.node-linker=hoisted',
+  '--config.auto-install-peers=false',
   '--ignore-scripts',
   runtimeRoot,
 ], {
@@ -82,6 +136,7 @@ execFileSync(pnpm, [
 
 const pruned = await pruneRuntime(runtimeRoot)
 console.log(`Desktop runtime pruned: ${String(pruned.removedFiles)} files, ${(pruned.removedBytes / 1024 / 1024).toFixed(1)} MB`)
+await verifyFrontendSkinAssets(runtimeRoot)
 
 for (const packageName of REQUIRED_RUNTIME_PACKAGES) {
   const packagePath = join(runtimeRoot, 'node_modules', ...packageName.split('/'))
