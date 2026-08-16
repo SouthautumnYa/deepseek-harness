@@ -80,9 +80,10 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
     for (const model of group.models) {
       if (rowId(group.id, model.id) !== id) continue
       const sameRoute = state.current?.provider === group.id && state.current.model === model.id
-      const reasoningEffort = sameRoute
-        ? state.current?.reasoningEffort ?? model.reasoning?.defaultEffort
-        : model.reasoning?.defaultEffort
+      // ModelDirectory restores a remembered effort for a different route and
+      // applies the catalog default when no remembered effort exists. Keep the
+      // popup selection free of derived defaults so a remembered value wins.
+      const reasoningEffort = sameRoute ? state.current?.reasoningEffort : undefined
       return {
         provider: group.id,
         model: model.id,

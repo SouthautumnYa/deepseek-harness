@@ -231,6 +231,19 @@ export class WorkspaceManager {
     return result
   }
 
+  /** Restore one session from the registry-global archive set. */
+  async unarchiveSession(sessionId: SessionId): Promise<RpcResult<{ archivedSessionIds: SessionId[] }>> {
+    const { result } = await this.api.workspace.unarchiveSession({ sessionId })
+    if (result.ok) this.installArchived(result.value.archivedSessionIds)
+    return result
+  }
+
+  /** Permanently delete one conversation and let the session stream remove its row. */
+  async deleteSession(sessionId: SessionId): Promise<RpcResult<{ deleted: true }>> {
+    const { result } = await this.api.workspace.deleteSession({ sessionId })
+    return result
+  }
+
   /**
    * Host-frame entry. Non-workspace frames are ignored so the runtime can
    * fan one host stream out to both object managers.

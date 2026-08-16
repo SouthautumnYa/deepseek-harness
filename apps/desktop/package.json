@@ -1,0 +1,125 @@
+{
+  "name": "@deepseek-ai/dsh-desktop",
+  "description": "Windows desktop shell for DeepSeek Harness",
+  "version": "0.1.0-rc.12",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "apps/desktop"
+  },
+  "type": "module",
+  "main": "dist/main.js",
+  "files": [
+    "dist/**/*",
+    "assets/**/*",
+    "package.json"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "stage-runtime": "node scripts/stage-runtime.mjs",
+    "test:stage-runtime": "node --test scripts/stage-runtime.spec.mjs",
+    "test:package-cleanup": "node --test scripts/cleanup-package-output.spec.mjs",
+    "clean:package-output": "node scripts/cleanup-package-output.mjs --apply --include-runtime",
+    "dev": "pnpm run build && electron .",
+    "package:win": "pnpm run build && pnpm run stage-runtime && electron-builder --win nsis && node scripts/cleanup-package-output.mjs --apply --include-runtime --prune-old-installers",
+    "package:dir": "pnpm run build && pnpm run stage-runtime && electron-builder --dir"
+  },
+  "build": {
+    "appId": "ai.deepseek.harness",
+    "productName": "DeepSeek Harness",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "win": {
+      "icon": "assets/whale-icon.ico"
+    },
+    "disableDefaultIgnoredFiles": true,
+    "npmRebuild": false,
+    "extraResources": [
+      {
+        "from": "runtime/config",
+        "to": "runtime/config",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "runtime/lib",
+        "to": "runtime/lib",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "runtime/node_modules",
+        "to": "runtime/node_modules",
+        "filter": [
+          "**/*",
+          "!**/*.d.ts",
+          "!**/*.d.ts.map",
+          "!**/*.map",
+          "!**/*.ts",
+          "!**/*.mts",
+          "!**/*.cts",
+          "!**/*.tsbuildinfo",
+          "!**/*.pdb",
+          "!**/*.c",
+          "!**/*.cc",
+          "!**/*.cpp",
+          "!**/*.cxx",
+          "!**/*.h",
+          "!**/*.hh",
+          "!**/*.hpp",
+          "!**/README*",
+          "!**/CHANGELOG*",
+          "!**/CONTRIBUTING*",
+          "!**/HISTORY*",
+          "!**/LICENCE*",
+          "!**/LICENSE*",
+          "!**/NOTICE*",
+          "!**/RELEASES*",
+          "!**/SECURITY*",
+          "!**/THREAT_MODEL*"
+        ]
+      },
+      {
+        "from": "runtime/package.json",
+        "to": "runtime/package.json"
+      },
+      {
+        "from": "runtime/pnpm-lock.yaml",
+        "to": "runtime/pnpm-lock.yaml"
+      },
+      {
+        "from": "runtime/pnpm-workspace.yaml",
+        "to": "runtime/pnpm-workspace.yaml"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "DeepSeek-Harness-Setup-${version}.${ext}",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "include": "build/installer.nsh",
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DeepSeek Harness"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "electron": "^36.3.2",
+    "electron-builder": "^26.0.12",
+    "typescript": "^6.0.3"
+  }
+}

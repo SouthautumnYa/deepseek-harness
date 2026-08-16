@@ -25,12 +25,14 @@ export type AppFrameProps =
 
 /** Center column grid item (session-body building block). */
 function CenterColumn(props: { children?: ReactNode }) {
-  return <div className={css.centerCol}>{props.children}</div>
+  return <div className={css.centerCol} data-frame-column="center">{props.children}</div>
 }
 
-/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
+/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close).
+ * deepseek-harness-skin: `data-qq-show` lets QQ skins restyle the right panel
+ * as the classic QQ Show / profile column. */
 function DetailsColumn(props: { children?: ReactNode }) {
-  return <div className={css.detailsCol}>{props.children}</div>
+  return <div className={css.detailsCol} data-frame-column="details" data-qq-show>{props.children}</div>
 }
 
 /**
@@ -165,12 +167,13 @@ export function AppFrame({
     <div
       ref={frameRef}
       className={css.frame}
+      data-app-frame
       style={{ gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
       data-details-collapsed={cols.details === 0 || undefined}
       data-dragging={dragging || undefined}
     >
-      <div className={css.sidebarCol}>
+      <div className={css.sidebarCol} data-frame-column="sidebar">
         {/* Render-site slot call with live concession output: a closed
             sidebar keeps the mounted slot at the compact-rail width, and the
             component sees its rendered state as owner params decided here

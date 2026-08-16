@@ -184,6 +184,13 @@ export interface PersistenceBackend<TornMarker = unknown> {
   appendBatch(meta: SessionHeader, events: readonly SessionEvent[], isMaterialized: boolean): Promise<void>
 
   /**
+   * Permanently remove one physical session entity. The coordinator invokes
+   * this inside the session id's serialization chain, so it cannot race an
+   * append, repair, adoption, or retirement operation for the same id.
+   */
+  delete?(id: SessionId, signal?: AbortSignal): Promise<boolean>
+
+  /**
    * Make a crash repair durable: truncate the torn tail (iff
    * `tornMarker !== undefined`) and append `closers` (iff any). NOT required to
    * be atomic — a file backend may truncate-then-append in two fsync'd steps.
@@ -609,6 +616,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       preparedSessionCacheSize: DEFAULT_PREPARED_SESSION_CACHE_SIZE,
       writeBatchMaxDelayMs: DEFAULT_WRITE_BATCH_MAX_DELAY_MS,
     },
+    private deleteBackend?: (id: SessionId, signal?: AbortSignal) => Promise<boolean>,
   ) {
     if (!Number.isSafeInteger(options.preparedSessionCacheSize)
       || options.preparedSessionCacheSize < 1) {
@@ -677,6 +685,41 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       throw new TypeError('session event batch is not losslessly JSON-serializable because it contains non-JSON-serializable data')
     }
     return this.serialize(id, () => this.appendCore(id, batch))
+  }
+
+  /**
+   * Permanently delete one session. A live Session is rejected because this
+   * persistence-only layer cannot stop its producer; deleting it underneath a
+   * live writer would let later events recreate the log. An unmaterialized
+   * coordinator state is discarded and returns false because no physical
+   * entity exists yet.
+   */
+  delete(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    const retired = Promise.resolve(this.retirements.get(id))
+    const waited = signal === undefined ? retired : observeQueuedAbort(retired, signal, () => false)
+    return waited.then(() => this.serialize(id, () => this.deleteCore(id, signal), signal))
+  }
+
+  private async deleteCore(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    if (this.ctx.sessions.get(id) !== undefined) {
+      throw new Error(`cannot delete session "${id}" while it is live`)
+    }
+
+    const state = this.states.get(id)
+    if (state !== undefined && state.materialized !== true) {
+      this.preparations.invalidate(id)
+      this.states.delete(id)
+      return false
+    }
+
+    const deleteBackend = this.deleteBackend ?? this.backend.delete
+    const deleted = deleteBackend === undefined
+      ? false
+      : await deleteBackend.call(this.backend, id, signal)
+    this.preparations.invalidate(id)
+    this.states.delete(id)
+    return deleted
   }
 
   private async appendCore(id: SessionId, events: readonly SessionEvent[]): Promise<void> {

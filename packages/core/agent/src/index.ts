@@ -228,6 +228,8 @@ interface AgentEntry {
   announced: boolean
   announcing: boolean
   detachRequested: boolean
+  /** The loop-owned teardown that stops the driver before registry removal. */
+  disposer?: () => Promise<void>
 }
 
 /** One tracked boundary plus its inherited nesting chain. */
@@ -506,6 +508,37 @@ export class AgentRegistry extends Service {
       this.detachEntered(entry)
     }
     return detach
+  }
+
+  /**
+   * Bind the loop's ordered lifecycle disposer to an entered Agent.
+   *
+   * Host-level destructive operations use this capability so a live Agent is
+   * stopped and drained through the same teardown path as normal fiber unload.
+   * Binding happens after both registries are entered and before either
+   * creation announcement, so synchronous observers cannot race an unbound
+   * lifecycle.
+   */
+  bindDisposer(agent: Agent, disposer: () => Promise<void>): void {
+    const entry = this.store.get(agent.id)
+    if (entry === undefined || entry.agent !== agent) {
+      throw new Error(`agent "${agent.id}" is not live in this registry`)
+    }
+    if (entry.disposer !== undefined && entry.disposer !== disposer) {
+      throw new Error(`agent "${agent.id}" already has a lifecycle disposer`)
+    }
+    entry.disposer = disposer
+  }
+
+  /**
+   * Stop and drain one live Agent through its exact owner teardown.
+   * @returns `true` when a live Agent was found and disposed, otherwise `false`.
+   */
+  async disposeAgent(id: SessionId): Promise<boolean> {
+    const entry = this.store.get(id)
+    if (entry === undefined || entry.disposer === undefined) return false
+    await entry.disposer()
+    return true
   }
 
   /** Remove one exact entered agent and emit its paired disposal when announced. */

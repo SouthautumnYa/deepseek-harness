@@ -577,6 +577,30 @@ describe('toStreamChunks', () => {
     ])
   })
 
+  it('replays terminal-only text and reasoning blocks before completion', async () => {
+    const done = assistant({
+      api: 'anthropic-messages',
+      content: [
+        { type: 'thinking', thinking: 'private thought' },
+        { type: 'text', text: 'visible answer' },
+      ],
+      usage: usage(3, 4),
+    })
+    const chunks = await collect(toStreamChunks(feed(
+      { type: 'start', partial: assistant({ api: 'anthropic-messages' }) },
+      { type: 'done', reason: 'stop', message: done },
+    )))
+
+    expect(chunks.slice(0, 6)).toEqual([
+      { type: 'block-start', index: 0, blockType: 'reasoning' },
+      { type: 'reasoning-delta', index: 0, text: 'private thought' },
+      { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'private thought' } },
+      { type: 'block-start', index: 1, blockType: 'text' },
+      { type: 'text-delta', index: 1, text: 'visible answer' },
+      { type: 'block-end', index: 1, block: { type: 'text', text: 'visible answer' } },
+    ])
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+  })
   it('maps thinking events to reasoning blocks', async () => {
     const chunks = await collect(toStreamChunks(feed(
       { type: 'thinking_start', contentIndex: 0, partial: assistant() },
@@ -684,15 +708,21 @@ describe('mapStopReason / mapUsage', () => {
     expect(mapStopReason(assistant({ stopReason: 'stop' }))).toEqual({
       kind: 'error',
       failure: {
-        message: 'model "deepseek-v4-flash" returned a completed response with no content',
+        message: 'model "deepseek-v4-flash" returned a completed response with no visible content',
         code: EMPTY_RESPONSE_CODE,
       },
     })
   })
 
-  it('keeps a thinking-only stop successful (any block counts as content)', () => {
+  it('rejects a thinking-only stop because reasoning is not visible output', () => {
     expect(mapStopReason(assistant({ stopReason: 'stop', content: [{ type: 'thinking', thinking: 'mull' }] })))
-      .toEqual({ kind: 'stop' })
+      .toEqual({
+        kind: 'error',
+        failure: {
+          message: 'model "deepseek-v4-flash" returned a completed response with no visible content',
+          code: EMPTY_RESPONSE_CODE,
+        },
+      })
   })
 
   it('defaults the error message when pi-ai omits it', () => {

@@ -310,13 +310,19 @@ export function inactiveRows(tree: EntryTree): string[] {
  * @param error - the value the mount rejected with.
  * @returns a single-line-per-cause description.
  */
-function mountDetail(error: unknown): string {
+function mountDetail(error: unknown, ancestors: ReadonlySet<Error> = new Set()): string {
   /* v8 ignore next -- every path into the mount's catch throws an Error: the loader
      wraps a row's thrown value before it propagates, and this module's own
      rejections are Errors. The fallback keeps a hostile value readable. */
   if (!(error instanceof Error)) return String(error)
-  if (!(error instanceof AggregateError)) return error.message
-  return [error.message, ...error.errors.map(cause => `- ${mountDetail(cause)}`)].join('\n')
+  if (ancestors.has(error)) return `${error.message} (circular cause)`
+  const nextAncestors = new Set(ancestors)
+  nextAncestors.add(error)
+  const causes: unknown[] = error instanceof AggregateError ? [...error.errors] : []
+  if (error.cause !== undefined) causes.push(error.cause)
+  return causes.length === 0
+    ? error.message
+    : [error.message, ...causes.map(cause => `- ${mountDetail(cause, nextAncestors)}`)].join('\n')
 }
 
 /**

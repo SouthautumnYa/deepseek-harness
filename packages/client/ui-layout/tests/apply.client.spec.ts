@@ -11,7 +11,8 @@ import { stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-runtime/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import { apply as themeApply, inject as themeInject, ThemeRuntime } from '@deepseek-ai/dsh-client-ui-theme/client'
+import { apply as themeApply, EMPTY_CUSTOM_SKIN, inject as themeInject, ThemeRuntime } from '@deepseek-ai/dsh-client-ui-theme/client'
+import type { ThemeSettings } from '@deepseek-ai/dsh-client-ui-theme/client'
 import { apply, inject, LayoutController } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { apply as nodeApply } from '@deepseek-ai/dsh-client-ui-layout'
 import * as invariant from '@deepseek-ai/dsh-client-ui-layout/invariant'
@@ -27,9 +28,14 @@ async function bench() {
   // seam for persistence; model this bench as a remote, memory-only browser.
   ctx.provide('locale', new LocaleRuntime(ctx))
   ctx.provide('connection', { api: { settings: {} }, isLoopback: false } as never)
-  // ui-theme's Appearance row binds a durable scope through these two.
+  // ui-theme's Appearance row binds a durable scope through these two. The
+  // scope stands at the stock look because ui-theme's runtime lets a skin pin
+  // the scheme its palette was generated for, and this bench is exercising the
+  // presenter's projection of the preference, not skin pinning.
   ctx.provide('remote', { $on: () => () => {} } as never)
-  ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+  const settings = stubSettingsScope<ThemeSettings>()
+  settings.publish({ status: 'ready', value: { preference: 'system', skin: 'none', customSkin: EMPTY_CUSTOM_SKIN }, revision: 1, writable: true })
+  ctx.provide('settingsScope', { bind: () => settings.scope } as never)
   await ctx.plugin({ inject: themeInject, apply: themeApply }).await()
   await slotsFiber.await()
   return { ctx, slots: ctx.get('slots') as SlotRegistry }

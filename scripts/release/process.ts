@@ -25,6 +25,29 @@ export interface CommandResult {
   readonly stderr: string
 }
 
+interface ProcessInvocation {
+  readonly command: string
+  readonly args: readonly string[]
+}
+
+/**
+ * Resolve commands that are distributed as Windows batch shims.
+ * spawnSync('pnpm', ...) does not resolve the .cmd shim without a shell,
+ * so route the known package-manager command through cmd.exe.
+ * @param command - executable name.
+ * @param args - command arguments.
+ * @returns The executable and arguments to pass to Node.
+ */
+function invocation(command: string, args: readonly string[]): ProcessInvocation {
+  if (process.platform === 'win32' && command === 'pnpm') {
+    return {
+      command: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', command, ...args],
+    }
+  }
+  return { command, args }
+}
+
 /**
  * Run a command and capture its output without judging the exit status.
  * @param command - executable name.
@@ -33,7 +56,8 @@ export interface CommandResult {
  * @returns The exit status and captured streams.
  */
 export function attempt(command: string, args: readonly string[], options: RunOptions = {}): CommandResult {
-  const result = spawnSync(command, [...args], { cwd: options.cwd, env: options.env, encoding: 'utf8' })
+  const resolved = invocation(command, args)
+  const result = spawnSync(resolved.command, [...resolved.args], { cwd: options.cwd, env: options.env, encoding: 'utf8' })
   if (result.error !== undefined) throw result.error
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
@@ -61,7 +85,8 @@ export function capture(command: string, args: readonly string[], options: RunOp
  * @param options - working directory and environment.
  */
 export function run(command: string, args: readonly string[], options: RunOptions = {}): void {
-  const result = spawnSync(command, [...args], { cwd: options.cwd, env: options.env, stdio: 'inherit' })
+  const resolved = invocation(command, args)
+  const result = spawnSync(resolved.command, [...resolved.args], { cwd: options.cwd, env: options.env, stdio: 'inherit' })
   if (result.error !== undefined) throw result.error
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} exited with ${String(result.status)}`)
 }

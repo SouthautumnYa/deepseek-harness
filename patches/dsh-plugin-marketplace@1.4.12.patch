@@ -1,0 +1,314 @@
+diff --git a/lib/client.js b/lib/client.js
+index d7efd86..25c3cd6 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -640,6 +640,51 @@ window.__ModuleLoader__.load({
+ 
+     /** DSH 插件 tab：现有市场列表逻辑 + 分类筛选 + 分页懒加载（PR #16）。 */
+     var CATEGORY_KEYS = ["vision", "document", "memory", "model", "notify", "coding", "conversation", "web-ui", "agent", "tool", "resource", "other"];
++    // registry.json uses normalized strings, while GitHub/search fallbacks can
++    // return arrays, JSON strings, or the newer `tags`/`categories` fields.
++    function metadataList(value) {
++      var source = value;
++      if (Array.isArray(source)) {
++        var arrayResult = [];
++        source.forEach(function (item) {
++          metadataList(item).forEach(function (entry) {
++            if (entry && arrayResult.indexOf(entry) === -1) arrayResult.push(entry);
++          });
++        });
++        return arrayResult;
++      }
++      if (typeof source === "string") {
++        var text = source.trim();
++        if (!text) return [];
++        try {
++          var parsed = JSON.parse(text);
++          return parsed === text ? [text] : metadataList(parsed);
++        } catch (e) {
++          return text.split(",").map(function (entry) { return entry.trim(); }).filter(Boolean);
++        }
++      }
++      if (typeof source === "number") return [String(source)];
++      if (source && typeof source === "object") {
++        return metadataList(source.name || source.slug || source.label || source.value);
++      }
++      return [];
++    }
++    function repoCategory(repo) {
++      var values = metadataList(repo.category).concat(metadataList(repo.categories));
++      for (var i = 0; i < values.length; i++) {
++        var key = values[i].toLowerCase().replace(/[\s_]+/g, "-");
++        if (CATEGORY_KEYS.indexOf(key) !== -1) return key;
++      }
++      return "other";
++    }
++    function repoSearchText(repo) {
++      return [repo.name, repo.full_name, repo.description]
++        .concat(metadataList(repo.topics), metadataList(repo.tags))
++        .filter(function (value) { return value != null; })
++        .map(function (value) { return String(value); })
++        .join(" ")
++        .toLowerCase();
++    }
+     var PLUGIN_PAGE_SIZE = 60;
+     function PluginTab(props) {
+       var state = useState(null); var repos = state[0]; var setRepos = state[1];
+@@ -734,10 +779,11 @@ window.__ModuleLoader__.load({
+         repos === null ? h("p", { style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, t("loading")) : null,
+         repos ? (function () {
+           var q = query.trim().toLowerCase();
++          var emptyFilterQuery = q || (category !== "all" ? t("cat" + category.split("-").map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join("")) : "");
+           var list = repos.filter(function (r) {
+-            if (category !== "all" && (r.category || "other") !== category) return false;
++            if (category !== "all" && repoCategory(r) !== category) return false;
+             if (!q) return true;
+-            return (r.name + " " + r.full_name + " " + (r.topics || []).join(" ")).toLowerCase().indexOf(q) !== -1;
++            return repoSearchText(r).indexOf(q) !== -1;
+           });
+           var shown = list.slice(0, visible);
+           var hasMore = shown.length < list.length;
+@@ -750,7 +796,7 @@ window.__ModuleLoader__.load({
+               return h(RepoCard, { key: repo.full_name, repo: repo, installed: repo.installed, updateAvailable: repo.updateAvailable, busy: !!(props.inst && props.inst.phase === "running"), selfBusy: !!(props.inst && props.inst.phase === "running" && props.inst.repo === repo.full_name), uninstalling: props.uninstalling, onEdit: props.onEdit, onUninstall: props.onUninstall, onCheckUpdate: props.onCheckUpdate, onInstall: function (fullName) { props.setInputValues({}); props.runInstall(fullName, {}, []); } });
+             }),
+             hasMore ? h("div", { key: "sentinel", id: "dshm-plugins-sentinel", style: { height: 1 } }) : null,
+-            list.length === 0 ? h("p", { key: "empty", className: "dshm-dim", style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, q ? t("noMatch", { q: query }) : t("noMatchCat")) : null
++            list.length === 0 ? h("p", { key: "empty", className: "dshm-dim", style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, emptyFilterQuery ? t("noMatch", { q: q ? query : emptyFilterQuery }) : t("noMatchCat")) : null
+           ];
+         })() : null,
+         repos === null ? h("p", { className: "dshm-dim", style: { fontSize: 13, color: "var(--dsw-alias-label-tertiary)" } }, t("loading")) : null,
+diff --git a/lib/index.js b/lib/index.js
+index a898ccb..c88d336 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,9 +1,9 @@
+ import { execFile } from "node:child_process";
+ import { randomBytes, timingSafeEqual } from "node:crypto";
+ import { promisify } from "node:util";
+-import { mkdir, rm, cp, readFile, writeFile, stat, readdir, rename } from "node:fs/promises";
++import { mkdir, rm, cp, readFile, writeFile, stat, readdir, rename, mkdtemp } from "node:fs/promises";
+ import { join, dirname, resolve, sep } from "node:path";
+-import { homedir } from "node:os";
++import { homedir, tmpdir } from "node:os";
+ import { createRequire } from "node:module";
+ import { gunzipSync } from "node:zlib";
+ import { fileURLToPath } from "node:url";
+@@ -778,6 +778,7 @@ const MESSAGES = {
+   zh: {
+     "step1": "[1/5] 克隆 https://github.com/{repo} ...",
+     "cloneDone": "克隆完成。",
++    "archiveDone": "GitHub codeload 归档下载并解压完成。",
+     "submoduleDone": "检测到 git 子模块，已递归拉取。",
+     "submoduleUnsafe": "子模块地址不安全（仅允许 https 或相对路径）: {urls}",
+     "cliHint": "README 提供官方 CLI 安装指令：{cmd}（与市场安装等效，二选一即可）",
+@@ -904,6 +905,7 @@ const MESSAGES = {
+   en: {
+     "step1": "[1/5] Cloning https://github.com/{repo} ...",
+     "cloneDone": "Clone complete.",
++    "archiveDone": "GitHub codeload archive downloaded and extracted.",
+     "submoduleDone": "Git submodules detected — initialized recursively.",
+     "submoduleUnsafe": "Unsafe submodule URLs (only https or relative paths allowed): {urls}",
+     "cliHint": "README offers the official CLI install command: {cmd} (equivalent to marketplace install — pick one)",
+@@ -1382,10 +1384,45 @@ const REGISTRY_MAX_AGE_MS = 6 * 3600 * 1000;
+ /** 插件分类白名单（与 build-registry.mjs 的 CATEGORY_RULES id 及 client.js CATEGORY_KEYS 对齐）。 */
+ const CATEGORY_KEYS = new Set(["vision", "document", "memory", "model", "notify", "coding", "conversation", "web-ui", "agent", "tool", "resource", "other"]);
+ 
+-/** 归一化仓库元数据（兼容搜索 API 与 registry.json 两种字段形态）；html_url 只放行 https://github.com 链接。
+- *  kind="skills" 时才保留 has_skill/has_install_script 三态（true/false/null 未知）；
+- *  其他来源（插件市场 registry / 搜索兜底）没有探测字段——不写该字段（undefined），
+- *  避免前端把「无探测数据」误判成「未验证」显示满屏徽章。 */
++/** 将 registry/search API 的字符串、JSON 字符串、数组和对象标签统一成字符串数组。 */
++function normalizeMetadataList(value) {
++  let source = value;
++  if (typeof source === "string") {
++    const text = source.trim();
++    if (!text) return [];
++    try {
++      source = JSON.parse(text);
++    } catch {
++      source = text.split(",");
++    }
++  }
++  if (!Array.isArray(source)) source = source == null ? [] : [source];
++  const result = [];
++  const seen = new Set();
++  for (const item of source.flat(Infinity)) {
++    let text = "";
++    if (typeof item === "string" || typeof item === "number") {
++      text = String(item).trim();
++    } else if (item && typeof item === "object") {
++      text = String(item.name ?? item.slug ?? item.label ?? item.value ?? "").trim();
++    }
++    if (!text || seen.has(text)) continue;
++    seen.add(text);
++    result.push(text);
++  }
++  return result;
++}
++
++function normalizeCategory(value) {
++  for (const raw of normalizeMetadataList(value)) {
++    const key = raw.trim().toLowerCase().replace(/[\s_]+/g, "-");
++    if (CATEGORY_KEYS.has(key)) return key;
++  }
++  return null;
++}
++
++/** 归一化仓库元数据（兼容搜索 API 与 registry.json 两种字段形态）；html_url 只放行 https://github.com 链接。 */
++/* kind="skills" 时才保留 has_skill/has_install_script 三态（true/false/null 未知）。 */
+ function normalizeRepo(r, kind = "dsh") {
+   let htmlUrl = null;
+   try {
+@@ -1400,7 +1437,7 @@ function normalizeRepo(r, kind = "dsh") {
+     stargazers_count: r.stargazers_count,
+     updated_at: r.updated_at,
+     default_branch: r.default_branch ?? "main",
+-    topics: r.topics ?? [],
++    topics: [...new Set([...normalizeMetadataList(r.topics), ...normalizeMetadataList(r.tags)])],
+     license: typeof r.license === "string" ? r.license : (r.license?.spdx_id ?? null),
+     pkg_name: typeof r.pkg_name === "string" && r.pkg_name.length > 0 ? r.pkg_name : null,
+     // registry.json 的版本号字段（构建期从仓库 package.json 抓取，供「更新」检测；
+@@ -1411,7 +1448,7 @@ function normalizeRepo(r, kind = "dsh") {
+     npm_version: typeof r.npm_version === "string" && r.npm_version.length > 0 ? r.npm_version : null,
+     npm_pkg_name: typeof r.npm_pkg_name === "string" && r.npm_pkg_name.length > 0 ? r.npm_pkg_name : null,
+     // registry.json 的分类字段（搜索 API 兜底没有 → null，客户端按「其他」处理）
+-    category: typeof r.category === "string" && CATEGORY_KEYS.has(r.category) ? r.category : null,
++    category: normalizeCategory(r.category) ?? normalizeCategory(r.categories),
+     // 构建期盖章字段必须透传：market_tags（人工验证徽章）与 installable（手动/非插件提示）
+     market_tags: Array.isArray(r.market_tags) && r.market_tags.length > 0 ? [...r.market_tags] : undefined,
+     installable: r.installable === "manual" || r.installable === "non-plugin" ? r.installable : undefined
+@@ -2014,6 +2051,115 @@ async function readLifecycleScripts(cacheDir) {
+   return [];
+ }
+ 
++function describeInstallError(error) {
++  const stderr = typeof error?.stderr === "string" ? error.stderr.trim() : "";
++  const message = typeof error?.message === "string" ? error.message.trim() : "";
++  return stderr || message || String(error ?? "unknown error");
++}
++
++/**
++ * 下载 GitHub 仓库到安装缓存：先尝试普通 clone，再用 HTTP/1.1 重试，
++ * 最后回退到 codeload 归档。Windows 优先使用系统 tar.exe，tar 不可用时
++ * 使用 PowerShell Expand-Archive 解压 zip，避免用户机器缺少 Unix 工具链。
++ * 返回 "git" 或 "archive"，供安装日志显示真实路径。
++ *
++ * options 只用于可重复测试：platform / fetchImpl / execFileImpl。
++ */
++async function installGitHubRepository(repo, cacheDir, logLine = () => {}, lang = "en", options = {}) {
++  const fullName = String(repo ?? "").trim();
++  if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) throw new Error("repo must be in owner/name format");
++
++  const platform = options.platform ?? process.platform;
++  const fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
++  const execFileImpl = options.execFileImpl ?? execFileAsync;
++  const log = typeof logLine === "function" ? logLine : () => {};
++  const parent = dirname(cacheDir);
++  await mkdir(parent, { recursive: true });
++
++  const cloneUrl = `https://github.com/${fullName}.git`;
++  const cloneAttempts = [
++    ["clone", "--depth", "1", cloneUrl, cacheDir],
++    ["-c", "http.version=HTTP/1.1", "clone", "--depth", "1", cloneUrl, cacheDir]
++  ];
++  let cloneError = null;
++  for (let i = 0; i < cloneAttempts.length; i++) {
++    await rm(cacheDir, { recursive: true, force: true });
++    try {
++      await execFileImpl("git", cloneAttempts[i], { timeout: 180000 });
++      return "git";
++    } catch (error) {
++      cloneError = error;
++      log(`git clone attempt ${i + 1}/2 failed: ${describeInstallError(error)}`);
++    }
++  }
++
++  const workDir = await mkdtemp(join(tmpdir(), "dsh-marketplace-archive-"));
++  const extractDir = join(workDir, "extract");
++  const archivePath = join(workDir, "source.tar.gz");
++  const request = async (url) => {
++    const signal = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(FETCH_TIMEOUT_MS) : undefined;
++    const response = await fetchImpl(url, {
++      headers: { "User-Agent": "dsh-plugin-marketplace", Accept: "application/octet-stream" },
++      ...(signal ? { signal } : {})
++    });
++    if (!response?.ok) throw new Error(`GitHub codeload ${response?.status ?? "request failed"}`);
++    if (typeof response.arrayBuffer !== "function") throw new Error("GitHub codeload response has no arrayBuffer()");
++    return Buffer.from(await response.arrayBuffer());
++  };
++  const copyExtractedContents = async () => {
++    const entries = await readdir(extractDir, { withFileTypes: true });
++    if (entries.length === 0) throw new Error("GitHub codeload archive is empty");
++    const root = entries.length === 1 && entries[0].isDirectory()
++      ? join(extractDir, entries[0].name)
++      : extractDir;
++    await rm(cacheDir, { recursive: true, force: true });
++    await mkdir(cacheDir, { recursive: true });
++    for (const entry of await readdir(root, { withFileTypes: true })) {
++      await cp(join(root, entry.name), join(cacheDir, entry.name), {
++        recursive: entry.isDirectory(),
++        force: true
++      });
++    }
++  };
++
++  try {
++    await mkdir(extractDir, { recursive: true });
++    const tarUrl = `https://codeload.github.com/${fullName}/tar.gz/HEAD`;
++    log(`git clone failed; trying GitHub codeload: ${tarUrl}`);
++    await writeFile(archivePath, await request(tarUrl));
++    const tarBinary = platform === "win32" ? "tar.exe" : "tar";
++    try {
++      await execFileImpl(tarBinary, ["-xzf", archivePath, "-C", extractDir], { timeout: 180000 });
++    } catch (tarError) {
++      if (platform !== "win32") throw tarError;
++      const zipPath = join(workDir, "source.zip");
++      const zipUrl = `https://codeload.github.com/${fullName}/zip/refs/heads/HEAD`;
++      log(`tar.exe failed; trying PowerShell archive extraction: ${zipUrl}`);
++      await writeFile(zipPath, await request(zipUrl));
++      const env = {
++        ...process.env,
++        DSH_MARKETPLACE_ARCHIVE: zipPath,
++        DSH_MARKETPLACE_EXTRACT: extractDir
++      };
++      await execFileImpl("powershell.exe", [
++        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
++        "Expand-Archive -LiteralPath $env:DSH_MARKETPLACE_ARCHIVE -DestinationPath $env:DSH_MARKETPLACE_EXTRACT -Force"
++      ], { timeout: 180000, env });
++    }
++    await copyExtractedContents();
++    log(t(lang, "archiveDone"));
++    return "archive";
++  } catch (archiveError) {
++    log(`GitHub codeload fallback failed: ${describeInstallError(archiveError)}`);
++    throw new Error(
++      `Git clone and the GitHub codeload fallback both failed: ${describeInstallError(cloneError)}; archive: ${describeInstallError(archiveError)}`,
++      { cause: archiveError }
++    );
++  } finally {
++    await rm(workDir, { recursive: true, force: true }).catch(() => {});
++  }
++}
++
+ /**
+  * 解析 .gitmodules 中的全部子模块 url（纯函数），并做安全校验（#10）：
+  * 只放行 https:// 与相对路径（./ ../，相对 origin 解析）；含 scheme 分隔符 ":"
+@@ -2883,9 +3029,8 @@ function apply(ctx) {
+           if (cacheReuse) {
+             logLine(t(langFull, "cacheReuse"));
+           } else {
+-            await rm(cacheDir, { recursive: true, force: true });
+-            await execFileAsync("git", ["clone", "--depth", "1", `https://github.com/${repo}.git`, cacheDir], { timeout: 180000 });
+-            logLine(t(langFull, "cloneDone"));
++            const cloneSource = await installGitHubRepository(repo, cacheDir, logLine, langFull);
++            logLine(t(langFull, cloneSource === "archive" ? "archiveDone" : "cloneDone"));
+             // #10：含 git submodule 的仓库（如 oh-dsh 的 upstream/*）克隆后子模块是空目录，
+             // 构建引用子模块源码（upstream/<pkg>/src/index.ts）必然失败——递归拉取。
+             // 仅当 .gitmodules 存在时执行（99% 的仓库无子模块，省一次进程开销）；
+@@ -3460,5 +3605,5 @@ async function installRepo({ type, cacheDir, repo, log, answers, logLine, lang,
+   return { type, instructions: true };
+ }
+ 
+-export { apply, detectInstalled, detectSkillInstalled, loadOwnRepo, scanProfilePackages, langOf, t, fetchAllRepos, fetchRegistryRepos, getList, isTrustedRequest, isTrustedHost, isSensitiveEnvKey, buildMinimalEnv, buildFilteredEnv, compareVersions, hasPatchEntry, normalizeRepo, appendPatchEntry, removePatchEntry, readLifecycleScripts, sanitizeManifest, isPnpmLocalDependency, matchProfileEntry, normalizeRepoRef, loadOfficialPackages, isOfficialPackage, readPackageSummary, findSkillRoots, findPluginRoots, findPresetRoots, detectType, parseGitmodulesUrls, scanCliInstallHint, scanExternalCliHint, findCliInstall, classifyInstallFailure, sanitizeLog, readBundledIndex, dedupeReposByPkgName, needsPluginBuild, adaptorRedirectRepo, applyAdaptorList, ensureInstalledIndex, annotateInstalled, annotateSkillInstalled, safeAssign };
++export { apply, detectInstalled, detectSkillInstalled, loadOwnRepo, scanProfilePackages, langOf, t, fetchAllRepos, fetchRegistryRepos, getList, isTrustedRequest, isTrustedHost, isSensitiveEnvKey, buildMinimalEnv, buildFilteredEnv, compareVersions, hasPatchEntry, normalizeRepo, appendPatchEntry, removePatchEntry, readLifecycleScripts, sanitizeManifest, isPnpmLocalDependency, matchProfileEntry, normalizeRepoRef, loadOfficialPackages, isOfficialPackage, readPackageSummary, findSkillRoots, findPluginRoots, findPresetRoots, detectType, parseGitmodulesUrls, scanCliInstallHint, scanExternalCliHint, findCliInstall, classifyInstallFailure, sanitizeLog, readBundledIndex, dedupeReposByPkgName, needsPluginBuild, adaptorRedirectRepo, applyAdaptorList, ensureInstalledIndex, annotateInstalled, annotateSkillInstalled, safeAssign, installGitHubRepository as __testInstallGitHubRepository };
+ 

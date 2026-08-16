@@ -7,7 +7,7 @@ import type {
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -110,6 +110,35 @@ describe('PiAiAdapter provider routing', () => {
     })
   })
 
+  it('disables profile reasoning for session-title requests without changing normal turns', async () => {
+    const server = await mockServer([{ events: textEvents }, { events: textEvents }])
+    const ctx = await harness(server.url, { reasoning: 'max' })
+
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      purpose: 'session-title',
+      maxTokens: 64,
+      messages: [],
+    })
+    expect(server.requests[0]).toMatchObject({
+      model: 'deepseek-v4-flash',
+      max_completion_tokens: 64,
+      thinking: { type: 'disabled' },
+    })
+    expect(server.requests[0]).not.toHaveProperty('reasoning_effort')
+
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      maxTokens: 64,
+      messages: [],
+    })
+    expect(server.requests[1]).toMatchObject({
+      max_completion_tokens: 64,
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'max',
+    })
+  })
+
   it('uses a dynamic request effort and reports unsupported efforts before network I/O', async () => {
     const server = await mockServer([{ events: textEvents }, { events: textEvents }])
     const ctx = await harness(server.url, { reasoning: 'max' })
@@ -141,6 +170,269 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.requests).toHaveLength(2)
   })
 
+  it('maps the inferred Codex-style levels for an undeclared third-party model', async () => {
+    const server = await mockServer([{ events: textEvents }, { events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'third-party': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'qwen3.8-max' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'third-party',
+      model: 'qwen3.8-max',
+      reasoningEffort: ReasoningEffortId('medium'),
+      messages: [],
+    })
+    expect(server.requests[0]).toMatchObject({ enable_thinking: true })
+
+    await assemble(ctx, {
+      provider: 'third-party',
+      model: 'qwen3.8-max',
+      reasoningEffort: ReasoningEffortId('max'),
+      messages: [],
+    })
+    expect(server.requests[1]).toMatchObject({ enable_thinking: true })
+  })
+
+  it('uses the legacy Chat Completions baseline for ordinary third-party models', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'ordinary-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'gpt-5.6-luna' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'ordinary-gateway',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: ReasoningEffortId('high'),
+      system: 'system prompt',
+      maxTokens: 77,
+      messages: [],
+    })
+
+    const request = server.requests[0] as {
+      messages?: { role?: string }[]
+      reasoning_effort?: string
+      max_tokens?: number
+      max_completion_tokens?: number
+      store?: boolean
+    }
+    expect(request).toMatchObject({ reasoning_effort: 'high', max_tokens: 77 })
+    expect(request).not.toHaveProperty('max_completion_tokens')
+    expect(request).not.toHaveProperty('store')
+    expect(request.messages?.[0]?.role).toBe('system')
+    expect(request.messages?.some(message => message.role === 'developer')).toBe(false)
+  })
+
+  it('keeps reasoning levels while sending system instead of developer to hand-declared gateways', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'console-go': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'kimi-k3' }],
+        },
+      },
+    })
+
+    await assemble(ctx, {
+      provider: 'console-go',
+      model: 'kimi-k3',
+      reasoningEffort: ReasoningEffortId('max'),
+      system: 'system prompt',
+      maxTokens: 77,
+      messages: [],
+    })
+
+    const request = server.requests[0] as {
+      messages?: { role?: string }[]
+      reasoning_effort?: string
+      max_tokens?: number
+      max_completion_tokens?: number
+    }
+    expect(request.reasoning_effort).toBe('max')
+    expect(request.max_tokens).toBe(77)
+    expect(request).not.toHaveProperty('max_completion_tokens')
+    expect(request.messages?.[0]?.role).toBe('system')
+    expect(request.messages?.some(message => message.role === 'developer')).toBe(false)
+  })
+
+  it('does not persist a K3 reasoning-only stop as a successful empty answer', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":"private thought"},"index":0,"finish_reason":null}]}',
+        '{"choices":[{"delta":{"content":null,"reasoning_content":null},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'console-go': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'kimi-k3' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'console-go',
+      model: 'kimi-k3',
+      reasoningEffort: ReasoningEffortId('max'),
+      messages: [],
+    })
+
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: EMPTY_RESPONSE_CODE } })
+    expect(result.message.content).toEqual([{ type: 'reasoning', text: 'private thought' }])
+  })
+
+  it('recovers visible text when an OpenAI-compatible gateway puts it in message.content', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"full-1","choices":[{"index":0,"message":{"role":"assistant","content":"hello from message"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":3}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from message' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
+
+  it('terminates an SSE complete-message frame whose finish reason is null', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"full-sse-1","choices":[{"index":0,"message":{"role":"assistant","content":"hello from sse"},"finish_reason":null}],"usage":{"prompt_tokens":3,"completion_tokens":3}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from sse' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
+
+  it('keeps a full-message reasoning-only completion private and unsuccessful', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"id":"reasoning-1","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"private thought"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+        '[DONE]',
+      ],
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'full-message-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'deepseek-v4-flash' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'full-message-gateway',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: EMPTY_RESPONSE_CODE } })
+    expect(result.message.content).toEqual([{ type: 'reasoning', text: 'private thought' }])
+  })
+
+  it('recovers a complete JSON Anthropic-compatible message', async () => {
+    const server = await mockServer([{
+      body: JSON.stringify({
+        id: 'msg-1',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-compatible',
+        content: [{ type: 'text', text: 'hello from anthropic' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 3, output_tokens: 3 },
+      }),
+    }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'anthropic-gateway': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'anthropic-messages',
+          baseURL: `${server.url}/v1`,
+          models: [{ id: 'claude-compatible' }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'anthropic-gateway',
+      model: 'claude-compatible',
+      messages: [],
+    })
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'hello from anthropic' }])
+    expect(result.finish).toEqual({ kind: 'stop' })
+  })
   it('preserves omitted profile options when constructing the adapter directly', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = new Context()

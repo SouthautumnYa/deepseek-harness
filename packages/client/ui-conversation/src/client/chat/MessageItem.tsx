@@ -194,7 +194,7 @@ function UserStyleBubble({
     <div className={css.userRow} data-pending-steering={pending || undefined} data-time-hover-root>
       <div className={css.userStack}>
         <ImageGallery images={images} load={imageLoader} align="end" labels={messageImageLabels(t)} />
-        {showBubble && <div className={css.bubble}>
+        {showBubble && <div className={css.bubble} data-message-bubble>
           {projectUserText(text)}
           {rest.map((block, i) => <JsonBlock key={i} label={t('message.extraBlock')} payload={block} truncatedLabel={truncated} />)}
         </div>}

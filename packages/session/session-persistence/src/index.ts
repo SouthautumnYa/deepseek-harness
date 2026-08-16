@@ -143,6 +143,21 @@ export abstract class SessionPersistence extends Service {
   abstract append(id: SessionId, events: readonly SessionEvent[]): Promise<void>
 
   /**
+   * Permanently remove one persisted session. The default keeps older custom
+   * persistence implementations source-compatible; concrete durable backends
+   * override it and return `true` only when a physical entity was removed.
+   *
+   * @param _id - the persisted session identity.
+   * @param signal - optional cancellation for backend deletion work.
+   * @returns `true` when a physical session existed and was deleted, otherwise
+   *   `false` (including an in-memory-only, never-materialized session).
+   */
+  async delete(_id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    return false
+  }
+
+  /**
    * Prepare the exact unpublished Session used by resume. Implementations may
    * reuse object graphs retained by an earlier {@link inspect} after confirming
    * their durable revision is still current; disposal releases an unpublished

@@ -21,6 +21,9 @@ async function bench() {
     api: { settings: { describe: async () => ({ result: { ok: false } }) } },
     isLoopback: false,
   } as never)
+  ctx.provide('workspaces', {
+    unarchiveSession: async () => ({ result: { ok: true, value: { archivedSessionIds: [] } } }),
+  } as never)
   ctx.provide('remote', { $on: () => () => {} } as never)
   return { ctx, slots: ctx.get('slots') as SlotRegistry }
 }
@@ -49,7 +52,7 @@ const CHILD_SPECS = {
 
 describe('ui-settings apply', () => {
   it('declares only the slot registry (a pure composition face, no locale)', () => {
-    expect(inject).toEqual(['slots', 'locale', 'connection'])
+    expect(inject).toEqual(['slots', 'locale', 'connection', 'workspaces'])
   })
 
   it('registers the shell and declares every child slot, before or after the declaration', async () => {
@@ -79,15 +82,18 @@ describe('ui-settings apply', () => {
     // This package registers the General section itself; every other section
     // arrives from a feature registrant.
     const GENERAL = { id: 'general', order: 0, label: 'general.nav' }
-    expect(sections.getSnapshot()).toEqual([GENERAL])
+    const ARCHIVED = { id: 'archived-conversations', order: 40, label: 'archived.nav' }
+    const TOKEN_USAGE = { id: 'token-usage', order: 50, label: 'tokenUsage.nav' }
+    expect(sections.getSnapshot()).toEqual([GENERAL, ARCHIVED, TOKEN_USAGE])
     b.slots.register({ name: 'settings.section', id: 'z', order: 20, label: 'Z' } as never, () => null)
     // No order and no label: both projection defaults apply.
     b.slots.register({ name: 'settings.section', id: 'a' } as never, () => null)
     const rows = sections.getSnapshot()
     expect(rows).toEqual([
       GENERAL,
-      { id: 'a', order: 0, label: '' },
       { id: 'z', order: 20, label: 'Z' },
+      ARCHIVED,
+      TOKEN_USAGE,
     ])
     // Snapshot identity is stable until the ledger moves (uSES contract).
     expect(sections.getSnapshot()).toBe(rows)

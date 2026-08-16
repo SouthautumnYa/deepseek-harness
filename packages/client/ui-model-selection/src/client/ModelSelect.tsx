@@ -19,14 +19,59 @@ import clsx from 'clsx'
 import type { ModelReasoningEffort, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import {
   IconCheckOutline16, IconChevronDownOutline14, IconChevronRightOutline14,
-  IconWarningOutline16, Toast,
+  IconRefreshOutline16, IconWarningOutline16, Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelSelectInjected } from './slots.ts'
 import css from './ModelSelect.module.css'
 
-/** Which pane the dropdown shows: the two-row root or one drilled-in list. */
-type Pane = 'root' | 'model' | 'effort'
+/** Which pane the dropdown shows: the root or one drilled-in list. */
+type Pane = 'root' | 'model' | 'effort' | 'speed'
+
+/** The dsh-model-modes plugin's existing DOM bridge for the Fast RPC state. */
+interface FastBridgeState {
+  available: boolean
+  enabled: boolean
+  busy: boolean
+  status: 'unknown' | 'loading' | 'ready'
+  reason: string | null
+}
+
+const EMPTY_FAST: FastBridgeState = {
+  available: false,
+  enabled: false,
+  busy: false,
+  status: 'unknown',
+  reason: null,
+}
+
+const FAST_BUTTON_SELECTOR = '.dsh_modelModes_button'
+
+function fastButtonFor(root: HTMLDivElement | null): HTMLButtonElement | null {
+  const card = root?.closest<HTMLElement>('[data-composer-card]')
+  return card?.querySelector<HTMLButtonElement>(FAST_BUTTON_SELECTOR) ?? null
+}
+
+function fastStateOf(button: HTMLButtonElement | null): FastBridgeState {
+  if (button === null) return EMPTY_FAST
+  const title = button.getAttribute('title') ?? ''
+  const separator = title.indexOf(' — ')
+  return {
+    available: button.dataset.available === 'true',
+    enabled: button.dataset.active === 'true',
+    busy: button.getAttribute('aria-busy') === 'true' || button.disabled,
+    status: button.getAttribute('aria-busy') === 'true' ? 'loading' : 'ready',
+    reason: separator < 0 ? null : title.slice(separator + 3),
+  }
+}
+
+function sameFastState(left: FastBridgeState, right: FastBridgeState): boolean {
+  return left.available === right.available
+    && left.enabled === right.enabled
+    && left.busy === right.busy
+    && left.status === right.status
+    && left.reason === right.reason
+}
 
 /** One dynamic effort row; undefined means preserve the provider default. */
 interface EffortChoice {
@@ -61,6 +106,9 @@ export function ModelSelect(
   const toastSeq = useRef(0)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const focusRef = useRef<HTMLButtonElement | null>(null)
+  const fastButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [fast, setFast] = useState<FastBridgeState>(EMPTY_FAST)
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const id = useId()
 
@@ -101,6 +149,40 @@ export function ModelSelect(
       })),
     ], [reasoning, t])
   const busy = state.status === 'selecting'
+  const speedLabel = fast.status === 'loading'
+    ? t('speed.loading')
+    : fast.available ? (fast.enabled ? t('speed.fast') : t('speed.standard')) : t('speed.unavailable')
+  const effortOverridden = reasoning === undefined
+    ? state.current?.reasoningEffort !== undefined
+    : effectiveEffort !== reasoning.defaultEffort
+  const canReset = state.current !== null && (effortOverridden || fast.enabled)
+
+  // Fast is owned by dsh-model-modes. Its button is the already-mounted face
+  // of the provider-native RPC; mirroring its data attributes keeps this
+  // package independent of that optional plugin and preserves its exact
+  // capability allowlist for third-party routes.
+  useEffect(() => {
+    const sync = (): void => {
+      const button = fastButtonFor(rootRef.current)
+      fastButtonRef.current = button
+      const bridge = button?.closest<HTMLElement>('.dsh_modelModes_wrap')
+      bridge?.setAttribute('aria-hidden', 'true')
+      if (button !== null) button.tabIndex = -1
+      const next = fastStateOf(button)
+      setFast(previous => sameFastState(previous, next) ? previous : next)
+    }
+    sync()
+    if (typeof MutationObserver === 'undefined') return
+    const scope = rootRef.current?.closest<HTMLElement>('[data-composer-card]') ?? document.body
+    const observer = new MutationObserver(sync)
+    observer.observe(scope, {
+      attributes: true,
+      attributeFilter: ['aria-busy', 'data-active', 'data-available', 'disabled', 'title'],
+      childList: true,
+      subtree: true,
+    })
+    return () => { observer.disconnect() }
+  }, [available])
 
   const reload = (): void => {
     lastActionRef.current = 'load'
@@ -126,16 +208,17 @@ export function ModelSelect(
 
   if (!available) return null
 
-  const show = (): void => {
-    setPane('root')
+  const show = (nextPane: Pane = 'root', trigger: HTMLButtonElement | null = null): void => {
+    setPane(nextPane)
     setOpen(true)
+    focusRef.current = trigger ?? triggerRef.current
     reload()
   }
 
   const close = (restoreFocus = false): void => {
     setOpen(false)
     setPane('root')
-    if (restoreFocus) queueMicrotask(() => { triggerRef.current?.focus() })
+    if (restoreFocus) queueMicrotask(() => { focusRef.current?.focus() })
   }
 
   const moveFocus = (offset: number): void => {
@@ -202,13 +285,57 @@ export function ModelSelect(
     void select(selection).then(settleSelection)
   }
 
+  const fastAction = (enabled: boolean): boolean => {
+    const button = fastButtonFor(rootRef.current)
+    const current = fastStateOf(button)
+    fastButtonRef.current = button
+    if (button === null || !current.available || current.busy || current.enabled === enabled) return false
+    button.click()
+    return true
+  }
+
+  const chooseSpeed = (enabled: boolean): void => {
+    const current = fastStateOf(fastButtonFor(rootRef.current))
+    if (current.available && current.enabled === enabled) {
+      close(true)
+      return
+    }
+    if (fastAction(enabled)) close(true)
+  }
+
+  const resetDefaults = async (): Promise<void> => {
+    if (state.current === null || !canReset || busy || fast.busy) return
+    if (effortOverridden) {
+      lastActionRef.current = 'select'
+      const defaultSelection: ModelSelection = {
+        provider: state.current.provider,
+        model: state.current.model,
+        ...reasoning?.defaultEffort === undefined ? {} : { reasoningEffort: reasoning.defaultEffort },
+      }
+      const accepted = await select(defaultSelection)
+      if (!accepted) {
+        settleSelection(false)
+        return
+      }
+    }
+    if (fast.enabled && !fastAction(false)) return
+    close(true)
+  }
+
   const modelLabel = currentChoice?.model.name ?? t('trigger.fallback')
   const triggerLabel = effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
+  // The bolt is a state indicator, not a capability marker. Standard mode
+  // keeps the speed menu available but must leave the trigger unadorned.
+  const showFastIcon = fast.available && fast.enabled
   const triggerAria = currentChoice === undefined
     ? t('trigger.selectAria')
-    : effortLabel === undefined
-      ? t('trigger.aria', { model: modelLabel })
-      : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
+    : fast.available
+      ? effortLabel === undefined
+        ? t('trigger.ariaSpeed', { model: modelLabel, speed: speedLabel })
+        : t('trigger.ariaEffortSpeed', { model: modelLabel, effort: effortLabel, speed: speedLabel })
+      : effortLabel === undefined
+        ? t('trigger.aria', { model: modelLabel })
+        : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
   itemRefs.current = []
   let itemIndex = 0
   const itemRef = () => {
@@ -218,28 +345,46 @@ export function ModelSelect(
 
   return (
     <div ref={rootRef} className={css.root} onKeyDown={onRootKeyDown} onBlur={onBlur}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={css.trigger}
-        aria-label={triggerAria}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? `${id}-menu` : undefined}
-        title={triggerLabel}
-        disabled={locked}
-        onClick={() => {
-          if (open) {
-            close()
-          } else {
-            show()
-          }
-        }}
-      >
-        <span className={css.triggerLabel}>{modelLabel}</span>
-        {effortLabel !== undefined && <span className={css.triggerEffort}>{effortLabel}</span>}
-        <IconChevronDownOutline14 className={clsx(css.chevron, open && css.chevronOpen)} />
-      </button>
+      <div className={css.controls}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className={css.trigger}
+          aria-label={triggerAria}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? `${id}-menu` : undefined}
+          title={triggerLabel}
+          disabled={locked}
+          onClick={() => {
+            if (open) {
+              close()
+            } else {
+              show('root', triggerRef.current)
+            }
+          }}
+        >
+          {showFastIcon && (
+            <span
+              className={clsx(
+                css.fastIcon,
+                fast.enabled && css.fastIconActive,
+                !fast.available && css.fastIconUnavailable,
+                fast.status === 'loading' && css.fastIconBusy,
+              )}
+              aria-hidden="true"
+              data-fast-integrated
+            >
+              <svg viewBox="0 0 12 12" width="14" height="14">
+                <path d="M6.8.8 2.4 6.3h3L4.9 11.2l4.7-6H6.5L6.8.8Z" fill="currentColor" />
+              </svg>
+            </span>
+          )}
+          <span className={css.triggerLabel}>{modelLabel}</span>
+          {effortLabel !== undefined && <span className={css.triggerEffort}>{effortLabel}</span>}
+          <IconChevronDownOutline14 className={clsx(css.chevron, open && pane !== 'effort' && css.chevronOpen)} />
+        </button>
+      </div>
 
       {open && (
         <div
@@ -247,7 +392,7 @@ export function ModelSelect(
           className={css.menu}
           role="menu"
           aria-label={t('menu.aria')}
-          aria-busy={state.status === 'loading' || busy}
+          aria-busy={state.status === 'loading' || busy || fast.busy}
         >
           {pane === 'root' && (
             <>
@@ -263,6 +408,35 @@ export function ModelSelect(
                   <IconChevronRightOutline14 className={css.cellChevron} />
                 </button>
               )}
+              <button
+                ref={itemRef()}
+                type="button"
+                role="menuitem"
+                className={clsx(css.cell, !fast.available && css.cellDisabled)}
+                disabled={fast.status !== 'ready' || !fast.available || fastButtonRef.current === null || fast.busy}
+                onClick={() => { setPane('speed') }}
+              >
+                <span className={css.cellIcon} aria-hidden>
+                  <svg viewBox="0 0 12 12" width="14" height="14">
+                    <path d="M6.8.8 2.4 6.3h3L4.9 11.2l4.7-6H6.5L6.8.8Z" fill="currentColor" />
+                  </svg>
+                </span>
+                <span className={css.cellLabel}>{t('menu.speed')}</span>
+                <span className={css.cellValue}>{speedLabel}</span>
+                <IconChevronRightOutline14 className={css.cellChevron} />
+              </button>
+              <div className={css.divider} role="separator" />
+              <button
+                ref={itemRef()}
+                type="button"
+                role="menuitem"
+                className={css.reset}
+                disabled={!canReset || busy || fast.busy}
+                onClick={() => { void resetDefaults() }}
+              >
+                <span>{t('action.resetDefaults')}</span>
+                <IconRefreshOutline16 className={css.resetIcon} />
+              </button>
             </>
           )}
 
@@ -357,6 +531,51 @@ export function ModelSelect(
                     </span>
                   </button>
                 ))}
+            </>
+          )}
+
+          {pane === 'speed' && (
+            <>
+              {fast.status === 'loading' && <div className={css.status}>{t('speed.loading')}</div>}
+              {fast.status !== 'loading' && !fast.available && (
+                <div className={css.empty}>
+                  {fast.reason ?? t('speed.unavailableDescription')}
+                </div>
+              )}
+              {fast.status === 'ready' && fast.available && (
+                <>
+                  <button
+                    ref={itemRef()}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={!fast.enabled}
+                    className={clsx(css.option, !fast.enabled && css.selected)}
+                    disabled={fast.busy}
+                    onClick={() => { chooseSpeed(false) }}
+                  >
+                    <span className={css.optionCopy}>
+                      <span className={css.modelName}>{t('speed.standard')}</span>
+                      <span className={css.description}>{t('speed.standardDescription')}</span>
+                    </span>
+                    <span className={css.check}>{!fast.enabled ? <IconCheckOutline16 /> : null}</span>
+                  </button>
+                  <button
+                    ref={itemRef()}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={fast.enabled}
+                    className={clsx(css.option, fast.enabled && css.selected)}
+                    disabled={fast.busy}
+                    onClick={() => { chooseSpeed(true) }}
+                  >
+                    <span className={css.optionCopy}>
+                      <span className={css.modelName}>{t('speed.fast')}</span>
+                      <span className={css.description}>{t('speed.fastDescription')}</span>
+                    </span>
+                    <span className={css.check}>{fast.enabled ? <IconCheckOutline16 /> : null}</span>
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>

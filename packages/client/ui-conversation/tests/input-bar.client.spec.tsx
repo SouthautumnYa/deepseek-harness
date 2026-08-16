@@ -222,6 +222,13 @@ describe('image draft rail', () => {
     expect(shell.snapshot.draft).toBe('同时粘贴的文字')
   })
 
+  it('leaves contextmenu unprevented for the desktop native edit menu', () => {
+    const { textarea, shell } = bench()
+    expect(fireEvent.contextMenu(textarea)).toBe(true)
+    fireEvent.paste(textarea, { clipboardData: { items: [], getData: () => '右键粘贴' } })
+    expect(shell.snapshot.draft).toBe('右键粘贴')
+  })
+
   it('accepts a drop anywhere on the page under the full-page overlay', () => {
     const addImages = vi.fn(() => null)
     const { view } = bench({ addImages })

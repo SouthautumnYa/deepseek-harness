@@ -183,10 +183,235 @@ export function catalogModels(provider: string): Map<string, Model<Api>> {
 export type PiAiReasoningEfforts = Partial<Record<ModelThinkingLevel, string | null>>
 
 /**
+ * The default reasoning contract for a model declared by a third-party route.
+ * Third-party model listings usually return only an id, so there is no catalog
+ * metadata from which pi-ai can infer thinking support. We expose the same
+ * practical five-level selector as Codex and let the provider wire adapter
+ * translate the canonical values.
+ */
+const THIRD_PARTY_REASONING_EFFORTS: PiAiReasoningEfforts = {
+  minimal: null,
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: null,
+  max: 'max',
+}
+
+/**
+ * Model families whose public ids conventionally expose a thinking control.
+ * A hand-declared route has no provider metadata, so an arbitrary chat model
+ * must not be presented with a selector that sends parameters its gateway may
+ * reject. Explicit `reasoningEfforts` remains the escape hatch for a private
+ * model whose name does not carry one of these family hints.
+ */
+function isThirdPartyReasoningModel(modelId: string, modelName: string | undefined): boolean {
+  const values = [modelId, modelName ?? ''].map(normalizeModelName)
+  return values.some(value => (
+    value.includes('deepseek')
+    || value.includes('qwen3')
+    || value.includes('kimi-k3')
+    || value.includes('reasoning')
+    || value.includes('thinking')
+    || value.includes('think')
+    || value.includes('codex')
+    || /(?:^|-)r(?:1|2)(?:-|$)/.test(value)
+    || /(?:^|-)o(?:1|3|4)(?:-|$)/.test(value)
+    || /(?:^|-)gpt-5(?:-|$)/.test(value)
+    || /(?:^|-)glm-(?:4|5)(?:-|$)/.test(value)
+  ))
+}
+
+/** Match common model-id context suffixes such as `128k`, `256K`, or `1m`. */
+const CONTEXT_SUFFIX = /(?:^|[-_.:/\s])([0-9]+(?:\.[0-9]+)?)\s*(k|m)(?=$|[-_.:/\s])/gi
+
+/** Match an un-suffixed token count; small version numbers are filtered below. */
+const CONTEXT_RAW_COUNT = /(?:^|[-_.:/\s])([0-9]{4,})(?=$|[-_.:/\s])/g
+
+/** A model name in a stable comparison form for matching third-party aliases. */
+function normalizeModelName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
+/** Remove release-channel suffixes that do not change a model family. */
+function modelNameVariants(value: string): readonly string[] {
+  const normalized = normalizeModelName(value)
+  const variants = new Set<string>([normalized])
+  let current = normalized
+  for (const suffix of ['-preview', '-latest', '-stable']) {
+    if (!current.endsWith(suffix)) continue
+    current = current.slice(0, -suffix.length)
+    variants.add(current)
+  }
+  return [...variants]
+}
+
+/** All installed models, indexed lazily so third-party routes can reuse exact metadata. */
+let knownCatalogModels: readonly Model<Api>[] | undefined
+
+function catalogModelIndex(): readonly Model<Api>[] {
+  if (knownCatalogModels !== undefined) return knownCatalogModels
+  knownCatalogModels = (getBuiltinProviders() as BuiltinProvider[])
+    .flatMap(provider => getBuiltinModels(provider) as Model<Api>[])
+  return knownCatalogModels
+}
+
+/**
+ * Find one unambiguous installed model matching a third-party route's public
+ * model id/name. Matching is exact and API-aware; a same-named model published
+ * by multiple providers is deliberately left to explicit configuration instead
+ * of borrowing whichever provider happens to advertise the largest window.
+ */
+function catalogCandidatesForThirdParty(
+  modelId: string,
+  modelName: string | undefined,
+  api?: string,
+): readonly Model<Api>[] {
+  const models = catalogModelIndex().filter(model => api === undefined || model.api === api)
+  const normalizedId = normalizeModelName(modelId)
+  const idMatches = models.filter(model => normalizeModelName(model.id) === normalizedId)
+  if (idMatches.length > 0) return idMatches
+  const idVariants = new Set(modelNameVariants(modelId))
+  const variantMatches = models.filter(model => modelNameVariants(model.id)
+    .some(variant => idVariants.has(variant)))
+  if (variantMatches.length > 0) return variantMatches
+  if (modelName === undefined) return []
+  const normalizedName = normalizeModelName(modelName)
+  const nameMatches = models.filter(model => normalizeModelName(model.name) === normalizedName)
+  return nameMatches
+}
+
+/** A context size is safe to borrow only when all matching rows agree. */
+function catalogContextWindowForThirdParty(
+  modelId: string,
+  modelName: string | undefined,
+  api?: string,
+): number | undefined {
+  const candidates = catalogCandidatesForThirdParty(modelId, modelName, api)
+  const windows = [...new Set(candidates
+    .map(model => model.contextWindow)
+    .filter((value): value is number => Number.isInteger(value) && value > 0))]
+  return windows.length === 1 ? windows[0] : undefined
+}
+
+/**
+ * Infer a third-party model's context capacity from reliable public metadata.
+ * An explicit per-model `contextWindow` still wins at the call site. A model
+ * family word such as `max` or `flash` is not a context-size claim, so it is
+ * intentionally ignored unless the installed catalog has an exact match.
+ * @param modelId - Provider model identifier.
+ * @param modelName - Optional human-readable model name.
+ * @param fallback - Context size used when no reliable hint is available.
+ * @param api - Optional protocol identifier used to filter catalog matches.
+ * @returns The inferred or fallback context size in tokens.
+ */
+export function inferThirdPartyContextWindow(
+  modelId: string,
+  modelName: string | undefined,
+  fallback: number,
+  api?: string,
+): number {
+  const known = catalogContextWindowForThirdParty(modelId, modelName, api)
+  if (known !== undefined) return known
+
+  const names = [modelName, modelId].filter((value): value is string => value !== undefined)
+
+  for (const name of names) {
+    CONTEXT_SUFFIX.lastIndex = 0
+    const suffixed = CONTEXT_SUFFIX.exec(name)
+    if (suffixed !== null) {
+      const suffix = suffixed[2]?.toLowerCase()
+      if (suffix !== undefined) {
+        const scale = suffix === 'm' ? 1_000_000 : 1_000
+        const value = Math.round(Number(suffixed[1]) * scale)
+        if (Number.isSafeInteger(value) && value > 0) return value
+      }
+    }
+    CONTEXT_RAW_COUNT.lastIndex = 0
+    const raw = CONTEXT_RAW_COUNT.exec(name)
+    if (raw !== null) {
+      const value = Number(raw[1])
+      // Version/date fragments such as `2025` are not useful capacity hints.
+      // Real bare context counts in model ids are normally at least 8K; names
+      // that need smaller windows can use the explicit `4k`/`8k` suffix form.
+      if (Number.isSafeInteger(value) && value >= 8_192) return value
+    }
+  }
+  return fallback
+}
+
+/** Match the Kimi K3 aliases used by different compatible gateways. */
+function isKimiK3Model(modelId: string, modelName: string | undefined): boolean {
+  const values = [modelId, modelName ?? ''].map(normalizeModelName)
+  return values.some(value => value === 'k3' || value === 'kimi-k3' || value.startsWith('kimi-k3-'))
+    || (values.some(value => value.includes('kimi')) && values.some(value => /(?:^|-)k3(?:-|$)/.test(value)))
+}
+
+/**
+ * Compatibility learned from a model family, used only when a custom route
+ * has no installed provider row of its own. This keeps K3 working even when a
+ * gateway advertises it under `k3` instead of `kimi-k3`.
+ */
+function inferThirdPartyCompat(
+  modelId: string,
+  modelName: string | undefined,
+  api: string,
+  reasoningConfigured: boolean,
+): OpenAICompletionsCompat | undefined {
+  if (api !== 'openai-completions') return undefined
+  // A hand-declared route normally points at a proxy that implements the
+  // long-lived Chat Completions contract, not the newer OpenAI-only additions.
+  // Set these baseline fields before applying family-specific reasoning
+  // dialects below. Without them pi-ai sends `store` and
+  // `max_completion_tokens`, which many otherwise compatible gateways reject.
+  const common: OpenAICompletionsCompat = {
+    supportsStore: false,
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: reasoningConfigured || isThirdPartyReasoningModel(modelId, modelName),
+    maxTokensField: 'max_tokens',
+  }
+  if (isKimiK3Model(modelId, modelName)) {
+    return {
+      ...common,
+      thinkingFormat: 'openai',
+      requiresReasoningContentOnAssistantMessages: true,
+      deferredToolsMode: 'kimi',
+    }
+  }
+  const values = [modelId, modelName ?? ''].map(normalizeModelName)
+  if (values.some(value => value.includes('qwen3'))) {
+    return {
+      ...common,
+      thinkingFormat: 'qwen',
+    }
+  }
+  if (values.some(value => /(?:^|-)glm-(?:4|5)(?:-|$)/.test(value))) {
+    return {
+      ...common,
+      thinkingFormat: 'zai',
+      // GLM-compatible gateways commonly accept the Z.AI thinking switch but
+      // reject the OpenAI-only `reasoning_effort` field.
+      supportsReasoningEffort: false,
+    }
+  }
+  if (values.some(value => /deepseek-v[34]/.test(value))) {
+    return {
+      ...common,
+      thinkingFormat: 'deepseek',
+      requiresReasoningContentOnAssistantMessages: true,
+    }
+  }
+  return common
+}
+
+/**
  * Reasoning-dispatch compatibility switches, set on the route (its models'
- * default) or per model (winning over the route). Only the switches pi-ai's
- * reasoning dispatch reads are offered; the rest of pi-ai's compat surface
- * keeps its baseURL-derived auto-detection. pi-ai types both fields only on
+ * default) or per model (winning over the route). `supportsDeveloperRole` is
+ * included because many OpenAI-compatible gateways accept reasoning controls
+ * but reject the newer `developer` message role. A hand-declared route has no
+ * catalog metadata to prove that role is supported, so it defaults to false;
+ * catalog models keep their installed metadata and explicit configuration can
+ * override either behavior. pi-ai types these fields only on
  * `OpenAICompletionsCompat` — the other wire protocols define their reasoning
  * fields in the protocol itself — so resolution rejects a model-level switch
  * anywhere else, while a route-level default skips past models it cannot fit.
@@ -196,6 +421,8 @@ export interface PiAiCompatProfile {
   thinkingFormat?: PiAiThinkingFormat
   /** Whether the endpoint accepts `reasoning_effort`; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. */
   supportsReasoningEffort?: boolean
+  /** Whether the endpoint accepts `role: "developer"`; hand-declared routes default to false. */
+  supportsDeveloperRole?: boolean
 }
 
 /** One configured model entry: an id plus the catalog fields it overrides. */
@@ -227,7 +454,8 @@ export interface PiAiModelProfile {
   input?: PiAiModality[]
   /**
    * Selectable reasoning efforts. Absent inherits the installed catalog
-   * entry's capability (a hand-declared model has none and does not reason);
+   * entry's capability; a model outside that catalog receives the default
+   * Codex-style levels unless this field is explicitly set to `false`;
    * `false` declares a non-reasoning model, which is how a profile strips
    * reasoning from a catalog model its gateway cannot serve; a non-empty dict
    * declares the offered levels and their wire spellings.
@@ -319,12 +547,31 @@ function resolveModelReasoning(
 ): ModelReasoning {
   const efforts = entry.reasoningEfforts
   if (efforts === undefined) {
-    // Reasoning rides the installed entry or is absent: a bare capability flag
-    // would make pi-ai advertise effort levels with no `thinkingLevelMap` to
-    // spell them, and no listing endpoint reports a model's reasoning
-    // protocol. The entry's map (when any) arrives through the `...base`
-    // spread in the model literal.
-    return { reasoning: base?.reasoning ?? false }
+    if (base === undefined) {
+      if (isKimiK3Model(entry.id, entry.name)) {
+        return {
+          reasoning: true,
+          thinkingLevelMap: {
+            off: null,
+            minimal: null,
+            low: 'low',
+            medium: null,
+            high: 'high',
+            xhigh: null,
+            max: 'max',
+          },
+        }
+      }
+      // A third-party endpoint normally cannot describe reasoning capability
+      // in its model listing. Give it a useful, explicit default contract;
+      // `reasoningEfforts: false` remains the opt-out for ordinary chat models.
+      return {
+        reasoning: true,
+        thinkingLevelMap: { ...THIRD_PARTY_REASONING_EFFORTS },
+      }
+    }
+    // Catalog metadata remains authoritative for shipped models.
+    return { reasoning: base.reasoning }
   }
   // The installed entry's map may ride along through `...base`; pi-ai never
   // reads it on a non-reasoning model, so stripping it is not worth a field
@@ -394,11 +641,13 @@ function resolveModelCompat(
 ): { compat: OpenAICompletionsCompat } | Record<string, never> {
   const thinkingFormat = entry.compat?.thinkingFormat ?? route?.thinkingFormat
   const supportsReasoningEffort = entry.compat?.supportsReasoningEffort ?? route?.supportsReasoningEffort
-  if (thinkingFormat === undefined && supportsReasoningEffort === undefined) return {}
+  const configuredSupportsDeveloperRole = entry.compat?.supportsDeveloperRole ?? route?.supportsDeveloperRole
   if (api !== 'openai-completions') {
-    if (entry.compat?.thinkingFormat !== undefined || entry.compat?.supportsReasoningEffort !== undefined) {
+    if (entry.compat?.thinkingFormat !== undefined
+      || entry.compat?.supportsReasoningEffort !== undefined
+      || entry.compat?.supportsDeveloperRole !== undefined) {
       invalid(provider, `model "${entry.id}" sets compat reasoning switches, but its api is "${api}";`
-        + ' thinkingFormat and supportsReasoningEffort exist only on openai-completions')
+        + ' thinkingFormat, supportsReasoningEffort, and supportsDeveloperRole exist only on openai-completions')
     }
     return {}
   }
@@ -409,11 +658,25 @@ function resolveModelCompat(
   // model starts from pi-ai's baseURL-derived detection instead, which is
   // what a protocol change means for every other compat field too.
   const inherited: OpenAICompletionsCompat | undefined = base?.api === api ? base.compat : undefined
+  const inferred = base === undefined
+    ? inferThirdPartyCompat(entry.id, entry.name, api, entry.reasoningEfforts !== undefined && entry.reasoningEfforts !== false)
+    : undefined
+  // A hand-declared route has no catalog metadata. OpenAI-compatible gateways
+  // commonly accept reasoning controls while rejecting `role: "developer"`,
+  // so system is the safe default. Catalog models retain pi-ai's known value,
+  // and an explicit switch wins over both.
+  const supportsDeveloperRole = configuredSupportsDeveloperRole
+    ?? (base === undefined ? false : inherited?.supportsDeveloperRole)
+  if (thinkingFormat === undefined
+    && supportsReasoningEffort === undefined
+    && supportsDeveloperRole === undefined) return {}
   return {
     compat: {
       ...inherited,
+      ...inferred,
       ...thinkingFormat === undefined ? {} : { thinkingFormat },
       ...supportsReasoningEffort === undefined ? {} : { supportsReasoningEffort },
+      ...supportsDeveloperRole === undefined ? {} : { supportsDeveloperRole },
     },
   }
 }
@@ -487,6 +750,7 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   const routeApi = sharedCatalogApi(defaults)
   const routeCompatDefined = request.compat?.thinkingFormat !== undefined
     || request.compat?.supportsReasoningEffort !== undefined
+    || request.compat?.supportsDeveloperRole !== undefined
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
   const models = entries.map((entry) => {
@@ -504,10 +768,21 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
       invalid(provider, `model "${entry.id}" needs a baseURL; the installed catalog does not describe this route`)
     }
     // Capacities fall back to the route's own defaults, so a model listing that
-    // discloses nothing but ids still yields a serviceable route. The fallback
-    // is a guess by construction, which is why it is a configurable route field
-    // rather than a constant buried here.
-    const contextWindow = entry.contextWindow ?? base?.contextWindow ?? request.defaultContextWindow
+    // discloses nothing but ids still yields a serviceable route. For a model
+    // outside the installed catalog, its id/name is a better hint than the
+    // generic fallback: `128k`/`1m`, large-context family names, and DeepSeek
+    // V4 variants are inferred. Some gateways persist the generic 262K fallback
+    // as if it were model metadata; when a stronger name hint exists, treat
+    // exactly that value as the fallback it really is, while preserving any
+    // other explicit per-model value.
+    const contextWindow = base === undefined
+      ? (() => {
+        const inferred = inferThirdPartyContextWindow(entry.id, entry.name, request.defaultContextWindow, api)
+        return entry.contextWindow === request.defaultContextWindow && inferred > entry.contextWindow
+          ? inferred
+          : entry.contextWindow ?? inferred
+      })()
+      : entry.contextWindow ?? base.contextWindow ?? request.defaultContextWindow
     if (!Number.isInteger(contextWindow) || contextWindow <= 0) {
       invalid(provider, `model "${entry.id}" contextWindow must be a positive integer`)
     }
@@ -540,7 +815,7 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   })
   if (routeCompatDefined && !models.some(model => model.api === 'openai-completions')) {
     invalid(provider, 'sets compat reasoning switches, but no model on the route speaks openai-completions;'
-      + ' thinkingFormat and supportsReasoningEffort exist only on that protocol')
+      + ' thinkingFormat, supportsReasoningEffort, and supportsDeveloperRole exist only on that protocol')
   }
   return { models, configuredMaxTokens }
 }

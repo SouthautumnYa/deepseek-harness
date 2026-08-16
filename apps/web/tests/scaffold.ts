@@ -25,7 +25,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Page } from 'playwright'
 import { expect } from 'vitest'
@@ -701,13 +701,16 @@ export function fixtureUserPrompts(fixtureText: string): string[] {
  * @returns the realized fixture text.
  */
 export function realizeSeedFixture(scaffold: WebScaffold, fixtureText: string, id: string): string {
+  const fixtureCwd = (JSON.parse(fixtureText.split('\n', 1)[0]!) as { cwd?: string }).cwd
+  const escapedWorkspaceCwd = JSON.stringify(scaffold.workspaceCwd).slice(1, -1)
   const realized = fixtureText
     .split('{{sessionId}}').join(id)
-    .split('{{cwd}}').join(scaffold.workspaceCwd)
-  const fixtureCwd = (JSON.parse(realized.split('\n', 1)[0]!) as { cwd?: string }).cwd
+    .split('{{cwd}}').join(escapedWorkspaceCwd)
   return fixtureCwd === undefined
     ? realized
-    : realized.split(fixtureCwd).join(scaffold.workspaceCwd)
+    : realized.split(fixtureCwd
+      .split('{{sessionId}}').join(id)
+      .split('{{cwd}}').join(escapedWorkspaceCwd)).join(escapedWorkspaceCwd)
 }
 
 export async function seedSession(
@@ -789,7 +792,7 @@ async function persistSeedSession(
 function normalizeAria(snapshot: string, workspaceCwd: string): string {
   // The session heading renders the workspace's basename, not the full
   // path, so both spellings must collapse to the token.
-  const base = workspaceCwd.split('/').pop()!
+  const base = basename(workspaceCwd)
   return snapshot
     .split(workspaceCwd).join('{{cwd}}')
     .split(base).join('{{workspace}}')

@@ -135,6 +135,16 @@
         surfaceContext: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
 
+    # Optional mobile IM bridge: WeChat / Feishu QR login and message routing.
+    # The channel plugin owns its credentials and runtime connections; the
+    # settings tab below is its browser-side companion.
+    - id: im-channel
+      name: '@dsh-extra/im-channel'
+      inject: [agents]
+      config:
+        channels: {}
+        commandPrefix: '/'
+
     # The client-plugin reload chain, always mounted: it is idle until a
     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It
     # is a row rather than a child of web-runtime because its node half is a
@@ -262,6 +272,52 @@
     # cards. A namespace this deployment does not expose renders nothing.
     - id: ui-settings-plugins
       name: '@deepseek-ai/dsh-client-ui-settings-plugins'
+
+    # Mobile Connect: QR login and binding management for the IM bridge.
+    - id: ui-settings-im
+      name: '@dsh-extra/dsh-client-ui-settings-im'
+      config: {}
+
+    # Provider-aware Fast mode. The plugin owns the capability matrix and
+    # injects only native Fast parameters for verified provider/model/API pairs.
+    - id: dsh-model-modes
+      name: 'dsh-model-modes'
+      config:
+        # The desktop's configured third-party routes use the OpenAI
+        # Completions wire shape. These exact provider profiles make Fast
+        # available for their advertised models without guessing for every
+        # unknown gateway in the world.
+        includeDefaultFastProfiles: true
+        fastProfiles:
+          - provider: geili
+            model: '*'
+            api: openai-completions
+            strategy: openai-fast
+          - provider: geili
+            model: '*'
+            api: openai-responses
+            strategy: openai-fast
+          - provider: gpt
+            model: '*'
+            api: openai-completions
+            strategy: openai-fast
+          - provider: gpt
+            model: '*'
+            api: openai-responses
+            strategy: openai-fast
+
+    # Optional routing-suite injector. The package is a pinned GitHub Release
+    # tarball so the desktop runtime carries the built artifact without
+    # cloning the suite's source/submodules.
+    - id: dsh-super-injector
+      name: '@dsh-external/dsh-super-injector'
+      config: {}
+
+    # Community marketplace: GitHub-backed DSH plugins and general Skills.
+    # The package is pinned in this bundle's manifest so the desktop runtime
+    # carries the same marketplace version in development and packaged builds.
+    - id: plugin-marketplace
+      name: 'dsh-plugin-marketplace'
 
     # Plan control: the composer plan seat over the plan projection + /plan channel.
     - id: ui-plan

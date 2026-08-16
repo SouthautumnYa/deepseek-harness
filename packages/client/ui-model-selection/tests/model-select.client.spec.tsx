@@ -45,9 +45,63 @@ function state(overrides: Partial<ModelDirectoryState> = {}): ModelDirectoryStat
   }
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  document.querySelectorAll('[data-test-fast-card]').forEach((node) => { node.remove() })
+})
+
+function fastFixture(options: { available: boolean; enabled: boolean }) {
+  const card = document.createElement('div')
+  card.dataset.testFastCard = ''
+  card.setAttribute('data-composer-card', '')
+  const button = document.createElement('button')
+  button.className = 'dsh_modelModes_button'
+  button.dataset.available = String(options.available)
+  button.dataset.active = String(options.enabled)
+  button.setAttribute('aria-busy', 'false')
+  button.setAttribute('aria-pressed', String(options.enabled))
+  button.setAttribute('aria-label', options.available ? 'Fast' : 'Fast 不可用')
+  button.title = options.available ? 'Fast' : 'Fast 不可用 — no declared Fast contract'
+  const mount = document.createElement('div')
+  card.append(button, mount)
+  document.body.append(card)
+  return { card, button, mount }
+}
 
 describe('ModelSelect reasoning effort', () => {
+  it('keeps reasoning in the model button and opens it from the menu', async () => {
+    const directory = createSnapshotStore<ModelDirectoryState>(state())
+    const select = vi.fn(async (selection: ModelSelection) => {
+      directory.set(state({ current: selection }))
+      return true
+    })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={directory}
+      load={vi.fn()}
+      select={select}
+      t={t}
+    />)
+
+    const modelButton = screen.getByRole('button', {
+      name: '选择模型，当前 DeepSeek-V4-Flash，推理等级 High',
+    })
+    expect(screen.queryByRole('button', { name: '选择思考等级，当前 High' })).toBeNull()
+    fireEvent.click(modelButton)
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Max/ }))
+
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledWith({
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'max',
+      })
+      expect(modelButton.getAttribute('aria-label')).toBe('选择模型，当前 DeepSeek-V4-Flash，推理等级 Max')
+    })
+  })
+
   it('renders adapter metadata and submits the effort as part of the session selection', async () => {
     const directory = createSnapshotStore<ModelDirectoryState>(state())
     const select = vi.fn(async (selection: ModelSelection) => {
@@ -79,6 +133,102 @@ describe('ModelSelect reasoning effort', () => {
         reasoningEffort: 'max',
       })
       expect(trigger.getAttribute('aria-label')).toBe('选择模型，当前 DeepSeek-V4-Flash，推理等级 Max')
+    })
+  })
+
+  it('hides the Fast bolt when the route does not expose Fast', async () => {
+    const fixture = fastFixture({ available: false, enabled: false })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={createSnapshotStore<ModelDirectoryState>(state())}
+      load={vi.fn()}
+      select={vi.fn().mockResolvedValue(true)}
+      t={t}
+    />, { container: fixture.mount })
+
+    const trigger = screen.getByRole('button', { name: /选择模型，当前/ })
+    await waitFor(() => {
+      expect(trigger.querySelector('[data-fast-integrated]')).toBeNull()
+    })
+    fireEvent.click(trigger)
+    const speed = screen.getByRole('menuitem', { name: /速度/ })
+    expect((speed as HTMLButtonElement).disabled).toBe(true)
+    expect(speed.textContent).toContain('不可用')
+    expect(trigger.getAttribute('aria-label')).not.toContain('速度')
+  })
+
+  it('uses the declared Fast button for speed changes and reflects the route state', async () => {
+    const fixture = fastFixture({ available: true, enabled: false })
+    let clicks = 0
+    fixture.button.addEventListener('click', () => {
+      clicks += 1
+      fixture.button.dataset.active = 'true'
+      fixture.button.setAttribute('aria-pressed', 'true')
+    })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={createSnapshotStore<ModelDirectoryState>(state())}
+      load={vi.fn()}
+      select={vi.fn().mockResolvedValue(true)}
+      t={t}
+    />, { container: fixture.mount })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /速度 标准/ })).toBeTruthy()
+    })
+    const trigger = screen.getByRole('button', { name: /速度 标准/ })
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: /速度/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /^快速/ }))
+
+    expect(clicks).toBe(1)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /速度 快速/ })).toBeTruthy()
+      expect(fixture.button.dataset.active).toBe('true')
+      expect(screen.getByRole('button', { name: /速度 快速/ }).querySelector('[data-fast-integrated]')).toBeTruthy()
+    })
+  })
+
+  it('resets the model effort and Fast route state together', async () => {
+    const fixture = fastFixture({ available: true, enabled: true })
+    fixture.button.addEventListener('click', () => {
+      fixture.button.dataset.active = 'false'
+      fixture.button.setAttribute('aria-pressed', 'false')
+    })
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'max' },
+    }))
+    const select = vi.fn(async (selection: ModelSelection) => {
+      directory.set(state({ current: selection }))
+      return true
+    })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={directory}
+      load={vi.fn()}
+      select={select}
+      t={t}
+    />, { container: fixture.mount })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /速度 快速/ })).toBeTruthy()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /速度 快速/ }))
+    const reset = screen.getByRole('menuitem', { name: '重置为默认设置' })
+    expect((reset as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(reset)
+
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledWith({
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'high',
+      })
+      expect(fixture.button.dataset.active).toBe('false')
+      expect(screen.getByRole('button', { name: /推理等级 High，速度 标准/ })).toBeTruthy()
     })
   })
 
@@ -158,7 +308,7 @@ describe('ModelSelect reasoning effort', () => {
       t={t}
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: /选择模型|当前/ }))
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     fireEvent.click(screen.getByRole('menuitemradio', { name: /DeepSeek-V4-Pro/ }))
     const toast = await screen.findByRole('alert')

@@ -84,7 +84,7 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     // constructor installs the write path and synchronously seeds existing live
     // sessions through loadStored(), so store must exist first.
     this.store = config?.store ?? new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
-    this.coordinator = new PersistenceCoordinator<never>(this.ctx, this)
+    this.coordinator = new PersistenceCoordinator<never>(this.ctx, this, undefined, this.deleteStored.bind(this))
   }
 
   // --- Service API (delegated to the coordinator) ---
@@ -99,6 +99,10 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
 
   append(id: SessionId, events: readonly SessionEvent[]): Promise<void> {
     return this.coordinator.append(id, events)
+  }
+
+  override delete(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    return this.coordinator.delete(id, signal)
   }
 
   override prepare(id: SessionId, signal?: AbortSignal): ReturnType<PersistenceCoordinator['prepare']> {
@@ -159,6 +163,11 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     /* v8 ignore next -- commitRepair only runs for a materialized (stored) session */
     if (!entry) return
     if (closers.length > 0) entry.events.push(...structuredClone(closers) as SessionEvent[])
+  }
+
+  private async deleteStored(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    return this.store.delete(id)
   }
 
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
@@ -228,6 +237,11 @@ class ControlledBackend implements PersistenceBackend<never> {
     if (entry !== undefined) entry.events.push(...structuredClone(closers) as SessionEvent[])
   }
 
+  async delete(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    return this.store.delete(id)
+  }
+
   async list(): Promise<SessionHeader[]> {
     return [...this.store.values()].map(entry => structuredClone(entry.meta))
   }
@@ -280,6 +294,33 @@ runCoordinatorContract('memory', async (): Promise<CoordinatorFixture> => {
 })
 
 describe('PersistenceCoordinator bounded writes', () => {
+  it('serializes physical deletion behind an in-flight append for the same id', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new ControlledBackend()
+    const appendGate = Promise.withResolvers<undefined>()
+    backend.beforeAppend = async (attempt) => {
+      if (attempt === 1) await appendGate.promise
+    }
+    const coordinator = new PersistenceCoordinator(ctx, backend, {
+      preparedSessionCacheSize: DEFAULT_PREPARED_SESSION_CACHE_SIZE,
+      writeBatchMaxDelayMs: 1,
+    })
+    const m = meta('delete-serialized')
+    await coordinator.create(m)
+    const append = coordinator.append(m.id, oneTurnLog())
+    await vi.waitFor(() => { expect(backend.appendAttempts).toBe(1) })
+
+    const deletion = coordinator.delete(m.id)
+    await Promise.resolve()
+    expect(backend.store.has(m.id)).toBe(false)
+
+    appendGate.resolve(undefined)
+    await append
+    await expect(deletion).resolves.toBe(true)
+    expect(backend.store.has(m.id)).toBe(false)
+  })
+
   it('cancels the batching deadline when live initialization rejects', async () => {
     vi.useFakeTimers()
     const ctx = new Context()

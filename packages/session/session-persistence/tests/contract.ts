@@ -99,6 +99,49 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
+    it('deletes a persisted session, leaves other sessions intact, and clears an empty in-memory session', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const deleted = meta('delete-me', '/delete')
+        const retained = meta('retain-me', '/retain')
+        const empty = meta('delete-empty')
+        await persistence.create(deleted)
+        await persistence.append(deleted.id, oneTurnLog())
+        await persistence.create(retained)
+        await persistence.append(retained.id, oneTurnLog())
+
+        expect(await persistence.delete(deleted.id)).toBe(true)
+        expect(await persistence.delete(deleted.id)).toBe(false)
+        await expect(persistence.load(deleted.id)).rejects.toThrow('not found')
+        await expect(persistence.load(retained.id)).resolves.toMatchObject({ meta: { id: retained.id } })
+        expect((await persistence.list()).map(header => header.id)).toEqual([retained.id])
+
+        await persistence.create(empty)
+        expect(await persistence.delete(empty.id)).toBe(false)
+        await persistence.create(empty)
+        await persistence.append(empty.id, oneTurnLog())
+        expect(await persistence.delete(empty.id)).toBe(true)
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('honors a pre-aborted delete signal without deleting the session', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('delete-aborted')
+        await persistence.create(m)
+        await persistence.append(m.id, oneTurnLog())
+        const reason = new Error('delete cancelled')
+        const controller = new AbortController()
+        controller.abort(reason)
+        await expect(persistence.delete(m.id, controller.signal)).rejects.toBe(reason)
+        await expect(persistence.load(m.id)).resolves.toMatchObject({ meta: { id: m.id } })
+      } finally {
+        await dispose()
+      }
+    })
+
     it('rejects a fractional creation timestamp without reserving its session id', async () => {
       const { persistence, dispose } = await make()
       try {

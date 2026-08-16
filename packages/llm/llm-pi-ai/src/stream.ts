@@ -87,13 +87,17 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
 
   switch (message.stopReason) {
     case 'stop':
-      // A terminal stop that produced no content blocks is a degenerate
-      // provider completion, not a successful (empty) assistant message.
-      if (message.content.length === 0) {
+      // Reasoning is private metadata, not visible assistant output. A
+      // reasoning-only stop is what Kimi K3 can return when the gateway ends
+      // before emitting its visible answer, and must not be persisted as a
+      // successful empty turn. Tool calls are a valid non-text completion.
+      const hasVisibleText = message.content.some(block => block.type === 'text' && block.text.length > 0)
+      const hasToolCall = message.content.some(block => block.type === 'toolCall')
+      if (!hasVisibleText && !hasToolCall) {
         return {
           kind: 'error',
           failure: {
-            message: `model "${message.model}" returned a completed response with no content`,
+            message: `model "${message.model}" returned a completed response with no visible content`,
             code: EMPTY_RESPONSE_CODE,
           },
         }
@@ -125,43 +129,121 @@ export async function* toStreamChunks(
   events: AsyncIterable<AssistantMessageEvent>,
   contextWindow?: number,
 ): AsyncGenerator<StreamChunk> {
+  type EmittedKind = 'text' | 'reasoning' | 'tool-call'
+  interface EmittedBlock {
+    kind: EmittedKind
+    text: string
+    ended: boolean
+  }
+
   // pi-ai contentIndex ↔ our block index map 1:1 (both count blocks from 0
   // in stream order), but we track ids per index for tool calls.
   const toolIds = new Map<number, { id: string; name: string }>()
+  const emitted = new Map<number, EmittedBlock>()
+  const ensureBlock = (index: number, kind: EmittedKind): EmittedBlock => {
+    const current = emitted.get(index)
+    if (current?.kind === kind) return current
+    const created = { kind, text: '', ended: false }
+    emitted.set(index, created)
+    return created
+  }
+  const appendBlock = (index: number, kind: EmittedKind, delta: string): void => {
+    ensureBlock(index, kind).text += delta
+  }
+  const finishBlock = (index: number, kind: EmittedKind, text: string): void => {
+    const state = ensureBlock(index, kind)
+    state.text = text
+    state.ended = true
+  }
+  const remaining = (state: EmittedBlock | undefined, kind: EmittedKind, complete: string): string => {
+    if (state === undefined || state.kind !== kind || state.text.length === 0) return complete
+    return complete.startsWith(state.text) ? complete.slice(state.text.length) : ''
+  }
+
+  function* terminalContent(message: AssistantMessage): Generator<StreamChunk> {
+    for (const [index, block] of message.content.entries()) {
+      const state = emitted.get(index)
+      if (state?.ended) continue
+      if (block.type === 'text') {
+        if (state?.kind !== 'text') yield { type: 'block-start', index, blockType: 'text' }
+        const delta = remaining(state, 'text', block.text)
+        if (delta.length > 0) yield { type: 'text-delta', index, text: delta }
+        yield { type: 'block-end', index, block: { type: 'text', text: block.text } }
+        finishBlock(index, 'text', block.text)
+      } else if (block.type === 'thinking') {
+        if (state?.kind !== 'reasoning') yield { type: 'block-start', index, blockType: 'reasoning' }
+        const delta = remaining(state, 'reasoning', block.thinking)
+        if (delta.length > 0) yield { type: 'reasoning-delta', index, text: delta }
+        yield { type: 'block-end', index, block: { type: 'reasoning', text: block.thinking } }
+        finishBlock(index, 'reasoning', block.thinking)
+      } else {
+        const argumentsText = JSON.stringify(block.arguments)
+        if (state?.kind !== 'tool-call') yield { type: 'block-start', index, blockType: 'tool-call' }
+        const delta = remaining(state, 'tool-call', argumentsText)
+        if (delta.length > 0) {
+          yield {
+            type: 'tool-call-delta',
+            index,
+            id: CallId(block.id),
+            ...(block.name.length > 0 ? { name: block.name } : {}),
+            argumentsDelta: delta,
+          }
+        }
+        yield {
+          type: 'block-end',
+          index,
+          block: {
+            type: 'tool-call',
+            id: CallId(block.id),
+            name: block.name,
+            arguments: argumentsText,
+          },
+        }
+        finishBlock(index, 'tool-call', argumentsText)
+      }
+    }
+  }
 
   for await (const event of events) {
     switch (event.type) {
       case 'start':
         break
       case 'text_start':
+        ensureBlock(event.contentIndex, 'text')
         yield { type: 'block-start', index: event.contentIndex, blockType: 'text' }
         break
       case 'text_delta':
+        appendBlock(event.contentIndex, 'text', event.delta)
         yield { type: 'text-delta', index: event.contentIndex, text: event.delta }
         break
       case 'text_end':
+        finishBlock(event.contentIndex, 'text', event.content)
         yield { type: 'block-end', index: event.contentIndex, block: { type: 'text', text: event.content } }
         break
       case 'thinking_start':
+        ensureBlock(event.contentIndex, 'reasoning')
         yield { type: 'block-start', index: event.contentIndex, blockType: 'reasoning' }
         break
       case 'thinking_delta':
+        appendBlock(event.contentIndex, 'reasoning', event.delta)
         yield { type: 'reasoning-delta', index: event.contentIndex, text: event.delta }
         break
       case 'thinking_end':
+        finishBlock(event.contentIndex, 'reasoning', event.content)
         yield { type: 'block-end', index: event.contentIndex, block: { type: 'reasoning', text: event.content } }
         break
       case 'toolcall_start': {
-        // The id/name live on the partial's content at this index.
         const partial = event.partial.content[event.contentIndex]
         const id = partial?.type === 'toolCall' ? partial.id : ''
         const name = partial?.type === 'toolCall' ? partial.name : ''
         toolIds.set(event.contentIndex, { id, name })
+        ensureBlock(event.contentIndex, 'tool-call')
         yield { type: 'block-start', index: event.contentIndex, blockType: 'tool-call' }
         break
       }
       case 'toolcall_delta': {
         const known = toolIds.get(event.contentIndex)
+        appendBlock(event.contentIndex, 'tool-call', event.delta)
         yield {
           type: 'tool-call-delta',
           index: event.contentIndex,
@@ -171,7 +253,9 @@ export async function* toStreamChunks(
         }
         break
       }
-      case 'toolcall_end':
+      case 'toolcall_end': {
+        const argumentsText = JSON.stringify(event.toolCall.arguments)
+        finishBlock(event.contentIndex, 'tool-call', argumentsText)
         yield {
           type: 'block-end',
           index: event.contentIndex,
@@ -181,11 +265,13 @@ export async function* toStreamChunks(
             name: event.toolCall.name,
             // pi-ai hands back the PARSED arguments; the harness vocabulary
             // keeps the raw string.
-            arguments: JSON.stringify(event.toolCall.arguments),
+            arguments: argumentsText,
           },
         }
         break
+      }
       case 'done':
+        yield* terminalContent(event.message)
         yield { type: 'usage', usage: mapUsage(event.message.usage) }
         yield {
           type: 'finish',

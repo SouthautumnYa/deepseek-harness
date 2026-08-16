@@ -938,16 +938,19 @@ export interface PiAiProviderProfile {
    */
   modelOverrides?: Record<string, PiAiModelOverride>
   /**
-   * Reasoning-dispatch switches for every `openai-completions` model on this
-   * route; each model's own `compat` overrides per field. What neither sets
-   * keeps the installed catalog entry's value, then pi-ai's baseURL-derived
-   * detection.
+   * Reasoning-dispatch and instruction-role switches for every
+   * `openai-completions` model on this route; each model's own `compat`
+   * overrides per field. What neither sets keeps the installed catalog entry's
+   * value, then pi-ai's baseURL-derived detection. Hand-declared routes default
+   * `supportsDeveloperRole` to false because private OpenAI-compatible
+   * gateways frequently reject `role: developer`.
    */
   compat?: PiAiCompatProfile
   /**
    * Context capacity for a model this route lists that neither the entry nor
-   * the installed catalog sizes (default 262,144). A guess by construction, so
-   * a deployment whose gateway serves smaller models corrects it here.
+   * the installed catalog sizes (default 262,144). Model-name inference may
+   * replace this generic fallback for a third-party large-context variant; a
+   * deployment whose gateway serves smaller models can correct it here.
    */
   defaultContextWindow?: number
   /**
@@ -1016,7 +1019,8 @@ export interface PiAiModelProfile {
   input?: PiAiModality[]
   /**
    * Selectable reasoning efforts. Absent inherits the installed catalog
-   * entry's capability (a hand-declared model has none and does not reason);
+   * entry's capability; a model outside that catalog receives the default
+   * Codex-style levels unless this field is explicitly set to `false`;
    * `false` declares a non-reasoning model, which is how a profile strips
    * reasoning from a catalog model its gateway cannot serve; a non-empty dict
    * declares the offered levels and their wire spellings.
@@ -1037,9 +1041,12 @@ export type PiAiModelOverride = Omit<PiAiModelProfile, 'id'>
 
 /**
  * Reasoning-dispatch compatibility switches, set on the route (its models'
- * default) or per model (winning over the route). Only the switches pi-ai's
- * reasoning dispatch reads are offered; the rest of pi-ai's compat surface
- * keeps its baseURL-derived auto-detection. pi-ai types both fields only on
+ * default) or per model (winning over the route). `supportsDeveloperRole` is
+ * included because many OpenAI-compatible gateways accept reasoning controls
+ * but reject the newer `developer` message role. A hand-declared route has no
+ * catalog metadata to prove that role is supported, so it defaults to false;
+ * catalog models keep their installed metadata and explicit configuration can
+ * override either behavior. pi-ai types these fields only on
  * `OpenAICompletionsCompat` — the other wire protocols define their reasoning
  * fields in the protocol itself — so resolution rejects a model-level switch
  * anywhere else, while a route-level default skips past models it cannot fit.
@@ -1049,6 +1056,8 @@ export interface PiAiCompatProfile {
   thinkingFormat?: PiAiThinkingFormat
   /** Whether the endpoint accepts `reasoning_effort`; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. */
   supportsReasoningEffort?: boolean
+  /** Whether the endpoint accepts `role: "developer"`; hand-declared routes default to false. */
+  supportsDeveloperRole?: boolean
 }
 
 /** One request modality a pi-ai model may accept. */
@@ -1079,7 +1088,7 @@ type WithheldThinkingFormat = 'chat-template' | 'qwen-chat-template'
 
 Depends on: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`)
 
-Source: [`packages/llm/llm-pi-ai/src/config.ts:172`](../packages/llm/llm-pi-ai/src/config.ts)
+Source: [`packages/llm/llm-pi-ai/src/config.ts:175`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 

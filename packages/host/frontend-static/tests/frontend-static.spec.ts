@@ -35,6 +35,8 @@ async function loadComposition(): Promise<Context> {
   const distIndex = join(dist, 'index.html')
   await writeFile(distIndex, '<head></head><body>shell</body>')
   await writeFile(join(dist, 'app.js'), 'export {}')
+  await writeFile(join(dist, 'theme.webp'), Buffer.from([0x52, 0x49, 0x46, 0x46]))
+  await writeFile(join(dist, 'theme.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
   await writeFile(join(dist, 'blob.bin'), 'BLOB')
   await writeFile(join(dist, 'manifest.webmanifest'), '{}')
   const configPath = join(root, 'cordis.yml')
@@ -100,6 +102,8 @@ describe('real Loader composition', () => {
       type: 'application/manifest+json',
       body: '{}',
     })
+    expect(await request(port, '/theme.webp')).toMatchObject({ status: 200, type: 'image/webp' })
+    expect(await request(port, '/theme.png')).toMatchObject({ status: 200, type: 'image/png' })
     await writeFile(join(root!, 'dist', 'app.js'), 'export const rebuilt = true')
     expect(await request(port, '/app.js')).toMatchObject({ status: 200, body: 'export const rebuilt = true' })
 

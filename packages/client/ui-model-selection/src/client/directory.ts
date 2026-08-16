@@ -33,6 +33,15 @@ export interface ModelDirectoryState {
   error: string | null
 }
 
+/** Stable key for one provider-owned model route inside a session. */
+function modelKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`
+}
+
+function isSameModel(left: ModelSelection | null, right: ModelSelection): boolean {
+  return left?.provider === right.provider && left.model === right.model
+}
+
 /** One session's shared directory controller; disposed with the session scope. */
 export class ModelDirectory {
   /** The shared snapshot both entries render from (uSES-safe store). */
@@ -43,6 +52,8 @@ export class ModelDirectory {
   /** Latest operation wins; an older response never overwrites a newer one. */
   private generation = 0
   private disposed = false
+  /** User-selected explicit efforts, retained for this session across model switches and reconnects. */
+  private readonly rememberedEfforts = new Map<string, string>()
 
   /**
    * @param sessions - the session wire face (captured from the plugin's root connection).
@@ -74,6 +85,7 @@ export class ModelDirectory {
       throw new Error(`session.models failed: ${result.error.code}: ${result.error.message}`)
     }
     const { current, routable, groups, failures } = result.value
+    this.rememberHostEffort(current)
     this.store.update((s) => {
       s.current = current
       s.routable = routable
@@ -93,15 +105,18 @@ export class ModelDirectory {
  */
   async select(selection: ModelSelection): Promise<void> {
     this.assertAvailable()
+    const current = this.store.getSnapshot().current
+    const sameModel = isSameModel(current, selection)
+    const requested = this.selectionForRequest(selection, sameModel)
     const generation = ++this.generation
     this.store.update((s) => { s.status = 'selecting'; s.error = null })
     const { result } = await this.sessions.selectModel({
       sessionId: this.sessionId,
-      provider: selection.provider,
-      model: selection.model,
-      ...selection.reasoningEffort === undefined
+      provider: requested.provider,
+      model: requested.model,
+      ...requested.reasoningEffort === undefined
         ? {}
-        : { reasoningEffort: selection.reasoningEffort },
+        : { reasoningEffort: requested.reasoningEffort },
     })
     if (this.disposed || generation !== this.generation) {
       if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
@@ -110,6 +125,13 @@ export class ModelDirectory {
     if (!result.ok) {
       this.store.update((s) => { s.status = 'error'; s.error = `${result.error.code}: ${result.error.message}` })
       throw new Error(`session.selectModel failed: ${result.error.code}: ${result.error.message}`)
+    }
+    const key = modelKey(selection.provider, selection.model)
+    if (selection.reasoningEffort !== undefined) {
+      this.rememberedEfforts.set(key, selection.reasoningEffort)
+    } else if (sameModel) {
+      // A same-model selection without an effort is the explicit provider-default choice.
+      this.rememberedEfforts.delete(key)
     }
     // The Host validated the route before accepting it, so a selection that
     // landed is by construction one it can serve.
@@ -150,5 +172,28 @@ export class ModelDirectory {
     if (!this.available()) {
       throw new Error('model selection is unavailable for addressed subagent sessions')
     }
+  }
+
+  /** Preserve an explicit Host value without replacing the Host-owned current projection. */
+  private rememberHostEffort(selection: ModelSelection): void {
+    if (selection.reasoningEffort !== undefined) {
+      this.rememberedEfforts.set(modelKey(selection.provider, selection.model), selection.reasoningEffort)
+    }
+  }
+
+  /** Fill a model switch from this session's remembered effort, then its advertised default. */
+  private selectionForRequest(selection: ModelSelection, sameModel: boolean): ModelSelection {
+    if (selection.reasoningEffort !== undefined || sameModel) return selection
+
+    const remembered = this.rememberedEfforts.get(modelKey(selection.provider, selection.model))
+    if (remembered !== undefined) return { ...selection, reasoningEffort: remembered }
+
+    const model = this.store.getSnapshot().groups
+      .find(group => group.id === selection.provider)
+      ?.models.find(candidate => candidate.id === selection.model)
+    const defaultEffort = model?.reasoning?.defaultEffort
+    return defaultEffort === undefined
+      ? selection
+      : { ...selection, reasoningEffort: defaultEffort }
   }
 }

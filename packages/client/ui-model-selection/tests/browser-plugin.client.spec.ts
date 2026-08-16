@@ -54,7 +54,7 @@ const GROUPS = [{
 }]
 
 /** Boot the plugin over fake faces + a stateful fake host (current moves on selectModel). */
-async function bench() {
+async function bench(groups = GROUPS) {
   const ctx = new Context()
   let current: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
   const calls = { models: 0, select: 0 }
@@ -62,7 +62,7 @@ async function bench() {
     models: () => {
       calls.models += 1
       return Promise.resolve({
-        result: { ok: true as const, value: { current, routable, groups: GROUPS, failures: [] } },
+        result: { ok: true as const, value: { current, routable, groups, failures: [] } },
       })
     },
     selectModel: (payload: { provider: string; model: string; reasoningEffort?: string }) => {
@@ -191,6 +191,82 @@ describe('ui-model-selection dual entry', () => {
       provider: 'deepseek-official',
       model: 'deepseek-v4-pro',
       reasoningEffort: 'high',
+    })
+  })
+
+  it('remembers effort per model across switches and keeps Host current authoritative after reset', async () => {
+    const b = await bench()
+    b.mint('s1')
+    const directory = b.ctx.modelDirectories.directoryFor(sid('s1'))
+    const face = b.seat().inject!(sid('s1'))
+    await directory.load()
+
+    await face.select({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    })
+    await face.select({ provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+    expect(b.hostCurrent()).toEqual({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'high',
+    })
+
+    // Reconnect must expose exactly what the Host reports, not a local cached route.
+    b.setHostCurrent({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'off',
+    })
+    b.ctx.emit('connection/reset')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(face.directory.getSnapshot().current).toEqual({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'off',
+    })
+
+    // The session-local preference survives the reconnect and is sent on return
+    // even when the switch comes from the /model popup entry.
+    const options = await b.contribution().ui.options(projection('s1'), new AbortController().signal)
+    const flash = options.find((option: SelectOption) => option.label === 'DeepSeek-V4-Flash')!
+    await b.contribution().ui.onSelect(flash, projection('s1'))
+    expect(b.hostCurrent()).toEqual({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    })
+  })
+
+  it('keys remembered efforts by provider and model, not model id alone', async () => {
+    const groups = [
+      {
+        id: 'provider-a',
+        name: 'Provider A',
+        models: [{ id: 'shared-model', name: 'Shared A', reasoning: GROUPS[0]!.models[0]!.reasoning }],
+      },
+      {
+        id: 'provider-b',
+        name: 'Provider B',
+        models: [{ id: 'shared-model', name: 'Shared B', reasoning: GROUPS[0]!.models[0]!.reasoning }],
+      },
+    ]
+    const b = await bench(groups)
+    b.mint('s1')
+    const directory = b.ctx.modelDirectories.directoryFor(sid('s1'))
+    const face = b.seat().inject!(sid('s1'))
+    await directory.load()
+
+    await face.select({ provider: 'provider-a', model: 'shared-model', reasoningEffort: 'max' })
+    await face.select({ provider: 'provider-b', model: 'shared-model', reasoningEffort: 'off' })
+    await face.select({ provider: 'provider-a', model: 'shared-model' })
+
+    expect(b.hostCurrent()).toEqual({
+      provider: 'provider-a',
+      model: 'shared-model',
+      reasoningEffort: 'max',
     })
   })
 

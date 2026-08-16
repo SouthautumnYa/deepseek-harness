@@ -50,6 +50,7 @@ import type {
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
+import { catalogModels } from './catalog.ts'
 import { toPiContext } from './context.ts'
 import { toStreamChunks } from './stream.ts'
 
@@ -138,15 +139,9 @@ function resolveReasoningLevel(
 /**
  * Selectable reasoning efforts for one model, or nothing at all.
  *
- * A model that carries no reasoning metadata — every hand-declared one, and
- * every catalog model pi-ai marks as non-reasoning — is reported by pi-ai as
- * supporting the single level `off`. Passing that through would offer a control
- * that cannot do what it says: `off` is translated to *omitting* the reasoning
- * option, which for such a model is byte-for-byte the same request as naming no
- * effort — so a provider whose own default is to think would keep thinking with
- * `off` selected. Omitting `reasoning` entirely is the seam's way of saying the
- * capability is unavailable, which leaves the surface offering only the
- * provider's default.
+ * Third-party models receive an adapter default of `off` when they expose the
+ * inferred Codex-style capability. Shipped catalog models keep their own
+ * provider default unless the profile configures one.
  * @param model - the resolved model descriptor.
  * @param defaultLevel - the profile's configured effort, already validated.
  * @returns the `reasoning` field, or an empty object when none can be offered.
@@ -168,6 +163,47 @@ function reasoningInfo(
   }
 }
 
+/** Extract the useful provider text without depending on one SDK error shape. */
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (typeof error === 'object' && error !== null) {
+    const record = error as Record<string, unknown>
+    for (const key of ['message', 'error', 'detail', 'body']) {
+      const value = record[key]
+      if (typeof value === 'string') return value
+      if (typeof value === 'object' && value !== null) {
+        const nested = (value as Record<string, unknown>)['message']
+        if (typeof nested === 'string') return nested
+      }
+    }
+  }
+  return ''
+}
+
+/**
+ * Whether a request failed before producing output because the gateway does
+ * not understand a reasoning control. The retry is intentionally narrow: a
+ * normal network, auth, model, or tool error must keep its original failure.
+ */
+function isReasoningParameterRejection(error: unknown): boolean {
+  const text = errorText(error).toLowerCase()
+  if (!/(reasoning[_ -]?effort|enable[_ -]?thinking|chat[_ -]?template|thinking)/.test(text)) return false
+  return /(400|422|invalid|unsupported|unknown|unrecognized|not allowed|extra|parameter|field|property)/.test(text)
+}
+
+/** Make a request-safe descriptor that suppresses every reasoning wire field. */
+function withoutReasoning(model: Model<Api>): Model<Api> {
+  return {
+    ...model,
+    reasoning: false,
+    compat: {
+      ...model.compat,
+      supportsReasoningEffort: false,
+    },
+  }
+}
+
 /** Merge deployment headers while removing case-insensitive attribution collisions. */
 function requestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const attribution = attributionHeaders()
@@ -185,6 +221,8 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
  */
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
+  /** Models whose gateway rejected a reasoning field during this resolution. */
+  private readonly reasoningFallbacks = new Set<string>()
 
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
@@ -199,6 +237,7 @@ export class PiAiAdapter extends LlmAdapter {
   private current(): PiAiSnapshot {
     const profiles = this.config.profiles()
     if (this.snapshot?.profiles === profiles) return this.snapshot
+    this.reasoningFallbacks.clear()
     const models: MutableModels = createModels()
     for (const profile of profiles.values()) models.setProvider(profile.piProvider)
     this.snapshot = { profiles, models }
@@ -257,7 +296,12 @@ export class PiAiAdapter extends LlmAdapter {
       const snapshot = this.current()
       const profile = this.profileOf(snapshot, provider)
       const resolvedModel = this.modelOf(snapshot, provider, model)
-      const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+      const defaultLevel = profile.reasoning !== undefined
+        ? describableReasoningLevel(resolvedModel, profile.reasoning)
+        : !catalogModels(profile.provider).has(resolvedModel.id)
+          && getSupportedThinkingLevels(resolvedModel).includes('off')
+          ? 'off'
+          : undefined
       // Only a cap the deployment configured is a request default; the
       // catalog's `maxTokens` sizes the model and stops there.
       const configuredMaxTokens = profile.configuredMaxTokens.get(model)
@@ -287,7 +331,9 @@ export class PiAiAdapter extends LlmAdapter {
     const model = this.modelOf(snapshot, options.provider, options.model)
     const reasoning = resolveReasoningLevel(
       model,
-      options.reasoningEffort ?? profile.reasoning,
+      options.purpose === 'session-title'
+        ? ReasoningEffortId('off')
+        : options.reasoningEffort ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
 
@@ -310,7 +356,10 @@ export class PiAiAdapter extends LlmAdapter {
       const context = attachments === undefined
         ? toPiContext(options)
         : await toPiContext(options, attachments)
-      const events = snapshot.models.streamSimple(model, context, {
+      const fallbackKey = `${options.provider}\u0000${model.id}`
+      const shouldFallback = reasoning !== undefined
+      const requestModel = this.reasoningFallbacks.has(fallbackKey) ? withoutReasoning(model) : model
+      const streamOptions = {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
@@ -319,18 +368,48 @@ export class PiAiAdapter extends LlmAdapter {
         // Profile headers are deployment-owned; attribution names are
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
-      })
-      const iterator = toStreamChunks(events, model.contextWindow)[Symbol.asyncIterator]()
+      }
+      let iterator = toStreamChunks(
+        snapshot.models.streamSimple(requestModel, context, streamOptions),
+        model.contextWindow,
+      )[Symbol.asyncIterator]()
       let exhausted = false
+      let yielded = false
+      let retriedWithoutReasoning = false
       try {
         while (true) {
-          const result = await watchdog.next(iterator)
+          let result: IteratorResult<StreamChunk>
+          try {
+            result = await watchdog.next(iterator)
+          } catch (error: unknown) {
+            // A few OpenAI-compatible gateways advertise a reasoning-capable
+            // model but reject the optional control field. Retry only before
+            // the first visible chunk; after output starts, preserving the
+            // original stream error is safer than duplicating assistant text.
+            if (shouldFallback && !yielded && !retriedWithoutReasoning
+              && !this.reasoningFallbacks.has(fallbackKey)
+              && isReasoningParameterRejection(error)) {
+              this.reasoningFallbacks.add(fallbackKey)
+              retriedWithoutReasoning = true
+              try { await iterator.return?.(undefined) } catch (_abortedRetry) {
+                // The failed iterator has no usable output; its cleanup is
+                // best effort before opening the parameter-free retry.
+              }
+              iterator = toStreamChunks(
+                snapshot.models.streamSimple(withoutReasoning(model), context, streamOptions),
+                model.contextWindow,
+              )[Symbol.asyncIterator]()
+              continue
+            }
+            throw error
+          }
           const timeout = timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')
           if (timeout !== undefined) throw timeout
           if (result.done) {
             exhausted = true
             return
           }
+          yielded = true
           yield result.value
         }
       } finally {

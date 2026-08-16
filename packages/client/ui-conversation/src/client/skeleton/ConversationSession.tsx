@@ -114,6 +114,7 @@ export function ConversationSessionHeader({
                   key={viewTab.id}
                   type="button"
                   role="tab"
+                  data-skin-tab
                   aria-selected={viewTab.id === active?.id}
                   className={clsx(css.tab, viewTab.id === active?.id && css.tabActive)}
                   onClick={() => { actions.setView(viewTab.id) }}
